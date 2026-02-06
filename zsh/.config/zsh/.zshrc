@@ -39,15 +39,6 @@ source $XDG_CONFIG_HOME/zsh/aliases.zsh
 # --- work stuff ---
 source $HOME/.zsh-work.zsh
 
-# --- Completions ---
-fpath=($fpath $XDG_CONFIG_HOME/zsh/completions)
-autoload -U _urfave_cli
-compdef _urfave_cli oc ucs-mgmt
-
-# bash completion system
-autoload -Uz bashcompinit && bashcompinit
-[ -f "$HOME/.zsh/bash_completions/multitool_cli" ] && source $HOME/.zsh/bash_completions/multitool_cli
-
 # --- Completion styling ---
 zstyle ':completion:*' matcher-list 'm:{a-z}={A-Za-z}'
 zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
@@ -140,7 +131,4 @@ path+=("$HOME/Library/Application Support/JetBrains")
 
 # add direnv hook
 eval "$(direnv hook zsh)"
-
-export MONOREPO_GOPATH_MODE=1 # This is optional. Without it, GOPATH mode will be off by default
-source $HOME/Uber/gopathmodeFunc.bash
 

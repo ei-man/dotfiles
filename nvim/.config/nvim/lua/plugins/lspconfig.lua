@@ -17,6 +17,8 @@ return {
   {
     'neovim/nvim-lspconfig',
     dependencies = {
+      'mason-org/mason.nvim',
+      'mason-org/mason-lspconfig.nvim',
       { 'j-hui/fidget.nvim', opts = {} }, -- Useful status updates for LSP.
       'saghen/blink.cmp',                 -- blink integration
     },
@@ -56,6 +58,12 @@ return {
       }
     },
     config = function(_, opts)
+      require('mason').setup()
+      require('mason-lspconfig').setup {
+        ensure_installed = { 'lua_ls', 'gopls' },
+        automatic_enable = false,
+      }
+
       -- ulsp requires special setup as it doesn't have default config in lspconfig
       require("lspconfig.configs").ulsp = {
         default_config = {
