@@ -26,7 +26,6 @@ return {
       { "<leader>fb",      function() Snacks.picker.buffers() end,                                                                                                                         desc = "Buffers" },
       { "<leader>fc",      function() Snacks.picker.files({ cwd = vim.fn.stdpath("config") }) end,                                                                                         desc = "Find Config File" },
       { "<leader>ff",      function() Snacks.picker.git_files() end,                                                                                                                       desc = "Find Files" },
-      -- { "<leader>fg", function() Snacks.picker.git_files() end, desc = "Find Git Files" },
       { "<leader>fp",      function() Snacks.picker.projects() end,                                                                                                                        desc = "Projects" },
       { "<leader>fr",      function() Snacks.picker.recent() end,                                                                                                                          desc = "Recent" },
       -- git
@@ -46,7 +45,6 @@ return {
       { '<leader>s"',      function() Snacks.picker.registers() end,                                                                                                                       desc = "Registers" },
       { '<leader>s/',      function() Snacks.picker.search_history() end,                                                                                                                  desc = "Search History" },
       { "<leader>sa",      function() Snacks.picker.autocmds() end,                                                                                                                        desc = "Autocmds" },
-      { "<leader>sb",      function() Snacks.picker.lines() end,                                                                                                                           desc = "Buffer Lines" },
       { "<leader>sc",      function() Snacks.picker.command_history() end,                                                                                                                 desc = "Command History" },
       { "<leader>sC",      function() Snacks.picker.commands() end,                                                                                                                        desc = "Commands" },
       { "<leader>sd",      function() Snacks.picker.diagnostics() end,                                                                                                                     desc = "Diagnostics" },
@@ -72,10 +70,7 @@ return {
       { "gI",              function() Snacks.picker.lsp_implementations() end,                                                                                                             desc = "Goto Implementation" },
       { "<leader>ds",      function() Snacks.picker.lsp_symbols() end,                                                                                                                     desc = "LSP [D]ocument [S]ymbols" },
       { "<leader>ws",      function() Snacks.picker.lsp_workspace_symbols() end,                                                                                                           desc = "LSP [W]orkspace [S]ymbols" },
-      -- WARN: This is not Goto Definition, this is Goto Declaration.
-      --  For example, in C this would take you to the header.
       { "gD",              function() Snacks.picker.lsp_declarations() end,                                                                                                                desc = "Goto Declaration" },
     },
   }
 }
--- vim: ts=2 sts=2 sw=2 et
