@@ -13,7 +13,6 @@ config.font_size = 13.0
 config.color_scheme = "Material Darker (base16)"
 config.window_decorations = "RESIZE"
 config.hide_tab_bar_if_only_one_tab = true
-config.native_macos_fullscreen_mode = false
 config.window_close_confirmation = "NeverPrompt"
 
 -- Keybindings
@@ -70,7 +69,7 @@ config.keys = {
                 local line = results[2]
                 local column = results[3]
                 if not string.find(path, "go-code") then
-                    path = "/Users/eimantas.sipalis/go-code/" .. path
+                    path = os.getenv("HOME") .. "/go-code/" .. path
                 end
 
                 wezterm.log_info("opening with goland", path, line, column)

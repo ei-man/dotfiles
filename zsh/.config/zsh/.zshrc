@@ -37,14 +37,12 @@ source $XDG_CONFIG_HOME/zsh/.p10k.zsh
 source $XDG_CONFIG_HOME/zsh/aliases.zsh
 
 # --- work stuff ---
-source $HOME/.zsh-work.zsh
+[ -f "$HOME/.zsh-work.zsh" ] && source "$HOME/.zsh-work.zsh"
 
 # --- Completion styling ---
 zstyle ':completion:*' matcher-list 'm:{a-z}={A-Za-z}'
 zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
 zstyle ':completion:*' menu no
-zstyle ':fzf-tab:complete:cd:*' fzf-preview 'ls --color $realpath'
-zstyle ':fzf-tab:complete:__zoxide_z:*' fzf-preview 'ls --color $realpath'
 
 
 # --- FZF ---
@@ -90,19 +88,7 @@ _fzf_comprun() {
 # --- History ---
 ## Max number of history lines in memory
 HISTSIZE=50000
-SAVEHIST=$HISTSIZE
 HISTDUP=erase
-
-setopt appendhistory
-# share history between shell sessions
-setopt SHARE_HISTORY
-# don't save commands starting with a space
-setopt HIST_IGNORE_SPACE
-setopt HIST_IGNORE_ALL_DUPS
-setopt HIST_SAVE_NO_DUPS
-setopt HIST_IGNORE_DUPS
-setopt HIST_FIND_NO_DUPS
-setopt HIST_VERIFY
 
 # Set up history file
 if [[ ! -d "$XDG_DATA_HOME/zsh" ]]; then
@@ -112,6 +98,16 @@ HISTFILE="$XDG_DATA_HOME/zsh/history"
 
 ## Max number of history lines saved in history file
 SAVEHIST=200000
+
+setopt appendhistory
+# share history between shell sessions
+setopt SHARE_HISTORY
+# don't save commands starting with a space
+setopt HIST_IGNORE_SPACE
+setopt HIST_IGNORE_ALL_DUPS
+setopt HIST_SAVE_NO_DUPS
+setopt HIST_FIND_NO_DUPS
+setopt HIST_VERIFY
 
 
 # ---- Zoxide (better cd) ----
