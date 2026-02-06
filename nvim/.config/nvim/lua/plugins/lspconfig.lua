@@ -55,13 +55,7 @@ return {
         },
       })
 
-      vim.lsp.config('ulsp', {
-        cmd = { "socat", "-", "tcp:localhost:27883,ignoreeof" },
-        filetypes = { "go", "java" },
-        root_markers = { ".git" },
-      })
-
-      vim.lsp.enable({ 'lua_ls', 'gopls', 'ulsp' })
+      vim.lsp.enable({ 'lua_ls', 'gopls' })
 
       vim.api.nvim_create_autocmd('LspAttach', {
         group = vim.api.nvim_create_augroup('lsp-attach', { clear = true }),
