@@ -22,82 +22,53 @@ return {
       { 'j-hui/fidget.nvim', opts = {} }, -- Useful status updates for LSP.
       'saghen/blink.cmp',                 -- blink integration
     },
-    opts = {
-      servers = {
-        lua_ls = {
-          settings = {
-            Lua = {
-              completion = {
-                callSnippet = 'Replace',
-              },
-              -- You can toggle below to ignore Lua_LS's noisy `missing-fields` warnings
-              -- diagnostics = { disable = { 'missing-fields' } },
-            },
-          },
-        },
-        gopls = {
-          cmd = { "gopls", "-remote=auto" },
-          flags = {
-            debounce_text_changes = 200,
-          },
-          init_options = {
-            staticcheck = true,
-            gofumpt = true,
-          },
-          settings = {
-            gopls = {
-              completeUnimported = true,
-              usePlaceholders = true,
-              analyses = {
-                unusedparams = true,
-              },
-            },
-          },
-        },
-        ulsp = {} -- empty as all defaults are good
-      }
-    },
-    config = function(_, opts)
+    config = function()
       require('mason').setup()
       require('mason-lspconfig').setup {
         ensure_installed = { 'lua_ls', 'gopls' },
         automatic_enable = false,
       }
 
-      -- ulsp requires special setup as it doesn't have default config in lspconfig
-      require("lspconfig.configs").ulsp = {
-        default_config = {
-          cmd = { "socat", "-", "tcp:localhost:27883,ignoreeof" },
-          flags = {
-            debounce_text_changes = 500,
+      -- Set blink.cmp capabilities for all LSP servers
+      vim.lsp.config('*', {
+        capabilities = require('blink.cmp').get_lsp_capabilities(),
+      })
+
+      -- Configure individual servers
+      vim.lsp.config('lua_ls', {
+        settings = {
+          Lua = {
+            completion = {
+              callSnippet = 'Replace',
+            },
           },
-          capabilities = vim.lsp.protocol.make_client_capabilities(),
-          filetypes = { "go", "java" },
-          root_dir = function(fname)
-            local result = require("lspconfig.async").run_command({ "git", "rev-parse", "--show-toplevel" })
-            if result and result[1] then
-              return vim.trim(result[1])
-            end
-            return require("lspconfig.util").root_pattern(".git")(fname)
-          end,
-          single_file_support = false,
         },
-      }
+      })
 
-      local lspconfig = require('lspconfig')
-      local blink = require('blink.cmp')
-      for server, config in pairs(opts.servers) do
-        -- passing config.capabilities to blink.cmp merges with the capabilities in your
-        -- `opts[server].capabilities, if you've defined it
-        config.capabilities = blink.get_lsp_capabilities(config.capabilities)
-        lspconfig[server].setup(config)
-      end
+      vim.lsp.config('gopls', {
+        cmd = { "gopls", "-remote=auto" },
+        settings = {
+          gopls = {
+            staticcheck = true,
+            gofumpt = true,
+            completeUnimported = true,
+            usePlaceholders = true,
+            analyses = {
+              unusedparams = true,
+            },
+          },
+        },
+      })
 
+      vim.lsp.config('ulsp', {
+        cmd = { "socat", "-", "tcp:localhost:27883,ignoreeof" },
+        filetypes = { "go", "java" },
+        root_markers = { ".git" },
+      })
+
+      vim.lsp.enable({ 'lua_ls', 'gopls', 'ulsp' })
 
       --  This function gets run when an LSP attaches to a particular buffer.
-      --    That is to say, every time a new file is opened that is associated with
-      --    an lsp (for example, opening `main.rs` is associated with `rust_analyzer`) this
-      --    function will be executed to configure the current buffer
       vim.api.nvim_create_autocmd('LspAttach', {
         group = vim.api.nvim_create_augroup('kickstart-lsp-attach', { clear = true }),
         callback = function(event)
@@ -109,11 +80,6 @@ return {
           map('<leader>rn', vim.lsp.buf.rename, '[R]e[n]ame')
           map('<leader>ca', vim.lsp.buf.code_action, '[C]ode [A]ction', { 'n', 'x' })
 
-          -- The following two autocommands are used to highlight references of the
-          -- word under your cursor when your cursor rests there for a little while.
-          --    See `:help CursorHold` for information about when this is executed
-          --
-          -- When you move your cursor, the highlights will be cleared (the second autocommand).
           local client = vim.lsp.get_client_by_id(event.data.client_id)
 
           if client and client:supports_method(vim.lsp.protocol.Methods.textDocument_documentHighlight, event.buf) then
@@ -139,10 +105,6 @@ return {
             })
           end
 
-          -- The following code creates a keymap to toggle inlay hints in your
-          -- code, if the language server you are using supports them
-          --
-          -- This may be unwanted, since they displace some of your code
           if client and client:supports_method(vim.lsp.protocol.Methods.textDocument_inlayHint, event.buf) then
             map('<leader>th', function()
               vim.lsp.inlay_hint.enable(not vim.lsp.inlay_hint.is_enabled { bufnr = event.buf })
@@ -152,7 +114,6 @@ return {
       })
 
       -- Diagnostic Config
-      -- See :help vim.diagnostic.Opts
       vim.diagnostic.config {
         severity_sort = true,
         float = { border = 'rounded', source = 'if_many' },
