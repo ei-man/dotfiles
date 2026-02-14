@@ -7,7 +7,7 @@ return {
         -- Load luvit types when the `vim.uv` word is found
         { path = '${3rd}/luv/library', words = { 'vim%.uv' } },
         { path = 'snacks.nvim',        words = { 'Snacks' } },
-        { path = 'lazy.nvim',          words = { 'LazyVim' } },
+
       },
     },
   },
@@ -34,8 +34,8 @@ return {
       local ensure_installed = { 'jupytext', 'tree-sitter-cli' }
       local mr = require('mason-registry')
       for _, tool in ipairs(ensure_installed) do
-        local p = mr.get_package(tool)
-        if not p:is_installed() then
+        local ok, p = pcall(mr.get_package, tool)
+        if ok and not p:is_installed() then
           p:install()
         end
       end

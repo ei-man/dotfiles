@@ -7,8 +7,6 @@ local check_external_reqs = function()
       vim.health.warn(string.format("Could not find executable: '%s'", exe))
     end
   end
-
-  return true
 end
 
 return {

@@ -26,7 +26,7 @@ return {
           definition = "gd",
           rename = "<leader>rn",
           references = "gr",
-          format = "<leader>gf",
+          format = "<leader>qf",
         },
         codeRunner = {
           enabled = true,
