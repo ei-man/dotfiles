@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "WebFetch(*)"
+    ]
+  },
+  "effortLevel": "high",
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true
+  }
+}
