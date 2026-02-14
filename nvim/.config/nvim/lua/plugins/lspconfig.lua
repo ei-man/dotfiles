@@ -21,10 +21,24 @@ return {
     },
     config = function()
       require('mason').setup()
+
+      -- Make Mason-installed tools available to Neovim (without modifying shell PATH)
+      vim.env.PATH = vim.fn.stdpath('data') .. '/mason/bin:' .. vim.env.PATH
+
       require('mason-lspconfig').setup {
         ensure_installed = { 'lua_ls', 'gopls' },
         automatic_enable = false,
       }
+
+      -- Ensure non-LSP Mason packages are installed
+      local ensure_installed = { 'jupytext', 'tree-sitter-cli' }
+      local mr = require('mason-registry')
+      for _, tool in ipairs(ensure_installed) do
+        local p = mr.get_package(tool)
+        if not p:is_installed() then
+          p:install()
+        end
+      end
 
       vim.lsp.config('*', {
         capabilities = require('blink.cmp').get_lsp_capabilities(),
