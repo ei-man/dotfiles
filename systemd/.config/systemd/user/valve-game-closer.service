@@ -1,0 +1,15 @@
+[Unit]
+Description=Cleanup orphaned Source 2 game processes
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/go run %h/.config/systemd/user/valve-game-closer.go
+WorkingDirectory=%h/.config/systemd/user
+Restart=always
+RestartSec=10
+PassEnvironment=HYPRLAND_INSTANCE_SIGNATURE XDG_RUNTIME_DIR
+
+[Install]
+WantedBy=default.target
+

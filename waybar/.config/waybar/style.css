@@ -1,0 +1,139 @@
+* {
+    /* "JetBrainsMono NF" is the name for the Nerd Font patched version */
+    font-family: "JetBrainsMono NF", "Font Awesome 7 Free", "Font Awesome 7 Brands", sans-serif;
+    font-size: 17px;
+    font-weight: bold; /* Optional: Nerd Fonts often look better slightly heavier */
+}
+
+window#waybar {
+    background-color: rgba(43, 48, 59, 0.5);
+    color: #ffffff;
+    border-bottom: 2px solid rgba(100, 114, 125, 0.5);
+    transition: background-color .5s;
+}
+
+button {
+    /* Use box-shadow instead of border so the text isn't offset */
+    box-shadow: inset 0 -3px transparent;
+    /* Avoid rounded borders under each button name */
+    border: none;
+    border-radius: 4px;
+}
+
+/* https://github.com/Alexays/Waybar/wiki/FAQ#the-workspace-buttons-have-a-strange-hover-effect */
+button:hover {
+    background: inherit;
+    box-shadow: inset 0 -3px #ffffff;
+}
+
+/* you can set a style on hover for any module like this */
+#pulseaudio:hover {
+    box-shadow: inset 0 -3px #ffffff;
+    background-color: #434c5e;
+}
+
+#workspaces button {
+    padding: 0 5px;
+    background-color: transparent;
+    color: #ffffff;
+    border-radius: 4px;
+}
+
+#workspaces button.focused {
+    background-color: #64727D;
+    box-shadow: inset 0 -3px #ffffff;
+}
+
+#workspaces button.urgent {
+    background-color: #eb4d4b;
+}
+
+/* THE HIGHLIGHT: The currently focused workspace */
+#workspaces button.active {
+    background-color: #88c0d0; /* Example: Light Blue */
+    color: #2e3440;            /* Dark text for contrast */
+    /* Optional: Add an underline instead of background */
+    /* border-bottom: 3px solid #88c0d0; */
+}
+
+/* OPTIONAL: Highlight visible workspaces on other monitors */
+/* (Since you have 2 screens, this is useful) */
+#workspaces button.visible {
+    background-color: #4c566a; /* Darker grey/blue */
+    color: #ffffff;
+}
+
+/* 2. Refine the hover state to ensure it catches everything */
+#workspaces button:hover {
+    background-color: #434c5e;
+    /* Optional: Remove the white underline (box-shadow) inherited from the generic button rule */
+    box-shadow: none; 
+}
+
+#clock,
+#network,
+#pulseaudio,
+#custom-media,
+#tray,
+#mpd {
+    padding: 0 15px;
+    color: #ffffff;
+}
+
+@keyframes blink {
+    to {
+        background-color: #ffffff;
+        color: #000000;
+    }
+}
+
+
+#network.disconnected {
+    background-color: #f53c3c;
+}
+
+
+#custom-media {
+    background-color: #66cc99;
+    color: #2a5c45;
+    min-width: 100px;
+}
+
+#custom-media.custom-spotify {
+    background-color: #66cc99;
+}
+
+#custom-media.custom-vlc {
+    background-color: #ffa000;
+}
+
+#tray {
+    background-color: transparent;
+    color: black;
+}
+
+#tray > .passive {
+    -gtk-icon-effect: dim;
+}
+
+#tray > .needs-attention {
+    -gtk-icon-effect: highlight;
+    background-color: #eb4d4b;
+}
+
+#mpd {
+    background-color: #66cc99;
+    color: #2a5c45;
+}
+
+#mpd.disconnected {
+    background-color: #f53c3c;
+}
+
+#mpd.stopped {
+    background-color: #90b1b1;
+}
+
+#mpd.paused {
+    background-color: #51a37a;
+}
