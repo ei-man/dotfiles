@@ -8,8 +8,13 @@ vim.keymap.set('n', '<Esc>', '<cmd>nohlsearch<CR>')
 -- Diagnostic keymaps
 vim.keymap.set('n', '<leader>q', vim.diagnostic.setloclist, { desc = 'Open diagnostic [Q] location list' })
 
+-- Toggle comment
+vim.keymap.set('n', '<C-/>', 'gcc', { remap = true, desc = 'Toggle comment' })
+vim.keymap.set('v', '<C-/>', 'gc', { remap = true, desc = 'Toggle comment' })
+
 -- Other keymaps
-vim.keymap.set('n', '<leader>cf', function() vim.fn.setreg('+', (vim.fn.expand '%')) end, { desc = 'Copy current file path'})
+vim.keymap.set('n', '<leader>cf', function() vim.fn.setreg('+', (vim.fn.expand '%')) end,
+  { desc = 'Copy current file path' })
 vim.keymap.set('i', 'jj', '<Esc>')
 
 -- Exit terminal mode in the builtin terminal with a shortcut that is a bit easier
@@ -28,6 +33,7 @@ vim.keymap.set('n', '<C-h>', '<C-w><C-h>', { desc = 'Move focus to the left wind
 vim.keymap.set('n', '<C-l>', '<C-w><C-l>', { desc = 'Move focus to the right window' })
 vim.keymap.set('n', '<C-j>', '<C-w><C-j>', { desc = 'Move focus to the lower window' })
 vim.keymap.set('n', '<C-k>', '<C-w><C-k>', { desc = 'Move focus to the upper window' })
+vim.keymap.set('n', '<C-p>', '<C-w>p', { desc = 'Switch to previous window' })
 
 -- [[ Basic Autocommands ]]
 --  See `:help lua-guide-autocommands`
@@ -42,5 +48,3 @@ vim.api.nvim_create_autocmd('TextYankPost', {
     vim.highlight.on_yank()
   end,
 })
-
--- vim: ts=2 sts=2 sw=2 et

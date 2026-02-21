@@ -31,7 +31,7 @@ return {
       }
 
       -- Ensure non-LSP Mason packages are installed
-      local ensure_installed = { 'jupytext', 'tree-sitter-cli' }
+      local ensure_installed = { 'jupytext', 'markdownlint', 'tree-sitter-cli' }
       local mr = require('mason-registry')
       for _, tool in ipairs(ensure_installed) do
         local ok, p = pcall(mr.get_package, tool)
