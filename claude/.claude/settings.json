@@ -6,9 +6,9 @@
       "WebSearch"
     ]
   },
-  "effortLevel": "high",
   "sandbox": {
     "enabled": true,
     "autoAllowBashIfSandboxed": true
-  }
+  },
+  "effortLevel": "high"
 }
