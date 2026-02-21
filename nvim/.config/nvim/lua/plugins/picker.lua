@@ -4,7 +4,25 @@ return {
     ---@type snacks.Config
     opts = {
       explorer = {},
-      picker = { sources = { explorer = {} } },
+      picker = {
+        sources = {
+          explorer = {
+            auto_close = true,
+            win = {
+              list = {
+                keys = {
+                  ["<C-p>"] = {
+                    function()
+                      vim.cmd("wincmd p")
+                    end,
+                    desc = "Switch to previous window",
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
     },
     lazy = false,
     priority = 1000,
@@ -62,7 +80,7 @@ return {
       { "<leader>D",       function() Snacks.picker.lsp_type_definitions() end,                                                                                                            desc = "Goto Type [D]efinition" },
       { "gr",              function() Snacks.picker.lsp_references() end,                                                                                                                  nowait = true,                     desc = "References" },
       { "gI",              function() Snacks.picker.lsp_implementations() end,                                                                                                             desc = "Goto Implementation" },
-      { "<leader>ds",      function() Snacks.picker.lsp_symbols() end,                                                                                                                     desc = "LSP [D]ocument [S]ymbols" },
+      { "<leader>ss",      function() Snacks.picker.lsp_symbols() end,                                                                                                                     desc = "LSP Document [S]ymbols" },
       { "<leader>ws",      function() Snacks.picker.lsp_workspace_symbols() end,                                                                                                           desc = "LSP [W]orkspace [S]ymbols" },
       { "gD",              function() Snacks.picker.lsp_declarations() end,                                                                                                                desc = "Goto Declaration" },
     },
