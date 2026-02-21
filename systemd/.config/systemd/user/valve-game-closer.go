@@ -17,20 +17,32 @@ var procToWindowTitle = map[string]string{
 	"cs2":   `"title": "Counter-Strike 2"`,
 }
 
+var missCount = map[string]int{}
+
+const missThreshold = 3
+
 func main() {
 	for {
 		for proc, title := range procToWindowTitle {
 			out, _ := exec.Command("pgrep", "-x", proc).Output()
 			pid := strings.TrimSpace(string(out))
 			if pid == "" {
+				missCount[proc] = 0
 				continue
 			}
+
 			out, _ = exec.Command("hyprctl", "clients", "-j").Output()
-			if !strings.Contains(string(out), title) && age(pid) > 60 {
-				log.Println("no window found for process", proc, " looked for: ", title, ", but only found: ", string(out))
-				time.Sleep(2 * time.Second)
+			if strings.Contains(string(out), title) {
+				missCount[proc] = 0
+				continue
+			}
+
+			missCount[proc]++
+			if missCount[proc] >= missThreshold && age(pid) > 60 {
+				log.Println("Killing orphaned", proc)
 				p, _ := strconv.Atoi(pid)
 				syscall.Kill(p, syscall.SIGKILL)
+				missCount[proc] = 0
 			}
 		}
 		time.Sleep(time.Second)
