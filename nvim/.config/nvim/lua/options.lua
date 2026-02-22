@@ -53,4 +53,61 @@ vim.opt.cursorline = true
 -- Minimal number of screen lines to keep above and below the cursor.
 vim.opt.scrolloff = 10
 
+vim.filetype.add {
+  extension = {
+    txtar = 'txtar',
+  },
+}
+
+local function looks_like_txtar(bufnr)
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  local max_lines = math.min(line_count, 200)
+  if max_lines == 0 then
+    return false
+  end
+
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, max_lines, false)
+  for _, line in ipairs(lines) do
+    if line:match '^%-%-%s+.+%s+%-%-$' then
+      return true
+    end
+  end
+
+  return false
+end
+
+local txtar_detect_group = vim.api.nvim_create_augroup('txtar_detect', { clear = true })
+vim.api.nvim_create_autocmd({ 'BufReadPost', 'BufNewFile' }, {
+  group = txtar_detect_group,
+  callback = function(args)
+    if vim.bo[args.buf].buftype ~= '' then
+      return
+    end
+
+    local name = vim.api.nvim_buf_get_name(args.buf)
+    if name:match '%.txtar$' then
+      vim.bo[args.buf].filetype = 'txtar'
+      return
+    end
+
+    local ft = vim.bo[args.buf].filetype
+    if ft ~= '' and ft ~= 'text' then
+      return
+    end
+
+    if looks_like_txtar(args.buf) then
+      vim.bo[args.buf].filetype = 'txtar'
+    end
+  end,
+})
+
+local txtar_group = vim.api.nvim_create_augroup('txtar_setup', { clear = true })
+vim.api.nvim_create_autocmd('FileType', {
+  group = txtar_group,
+  pattern = 'txtar',
+  callback = function(args)
+    require('txtar').attach(args.buf)
+  end,
+})
+
 -- vim: ts=2 sts=2 sw=2 et
