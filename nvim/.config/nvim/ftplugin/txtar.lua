@@ -3,4 +3,4 @@ if vim.b.txtar_ftplugin_loaded then
 end
 vim.b.txtar_ftplugin_loaded = true
 
-require('txtar').attach(0)
+pcall(vim.treesitter.start, 0, 'txtar')

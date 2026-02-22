@@ -1,0 +1,112 @@
+================================================================================
+basic txtar with commands and two archive files
+================================================================================
+
+# Add explicit group, installs by default
+write-file /root/.config/starch/state.yaml @initial-state.yaml
+
+! run pacman -Qi cowsay # not installed
+
+run starch add archofficial/cowsay
+
+run pacman -Qi cowsay # installed
+
+assert-file /root/.config/starch/state.yaml @expected-state.yaml
+
+-- initial-state.yaml --
+package_groups:
+    archofficial:
+        tool: pacman
+
+-- expected-state.yaml --
+package_groups:
+    archofficial:
+        tool: pacman
+        packages:
+            - cowsay
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (empty_line)
+  (comment_line
+    (comment)
+    (newline))
+  (command_line
+    (command)
+    (argument_list
+      (argument
+        (word))
+      (argument
+        (archive_ref)))
+    (newline))
+  (empty_line)
+  (bang_line
+    (bang)
+    (argument_list
+      (argument
+        (word))
+      (argument
+        (word))
+      (argument
+        (word))
+      (argument
+        (word)))
+    (inline_comment)
+    (newline))
+  (empty_line)
+  (command_line
+    (command)
+    (argument_list
+      (argument
+        (word))
+      (argument
+        (word))
+      (argument
+        (word)))
+    (newline))
+  (empty_line)
+  (command_line
+    (command)
+    (argument_list
+      (argument
+        (word))
+      (argument
+        (word))
+      (argument
+        (word)))
+    (inline_comment)
+    (newline))
+  (empty_line)
+  (command_line
+    (command)
+    (argument_list
+      (argument
+        (word))
+      (argument
+        (archive_ref)))
+    (newline))
+  (empty_line)
+  (archive_file
+    (archive_header
+      (archive_delim)
+      (archive_filename)
+      (archive_delim))
+    (newline)
+    (archive_body
+      (archive_body_line)
+      (archive_body_line)
+      (archive_body_line)
+      (archive_body_line)))
+  (archive_file
+    (archive_header
+      (archive_delim)
+      (archive_filename)
+      (archive_delim))
+    (newline)
+    (archive_body
+      (archive_body_line)
+      (archive_body_line)
+      (archive_body_line)
+      (archive_body_line)
+      (archive_body_line))))

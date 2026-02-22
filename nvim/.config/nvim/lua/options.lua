@@ -101,13 +101,4 @@ vim.api.nvim_create_autocmd({ 'BufReadPost', 'BufNewFile' }, {
   end,
 })
 
-local txtar_group = vim.api.nvim_create_augroup('txtar_setup', { clear = true })
-vim.api.nvim_create_autocmd('FileType', {
-  group = txtar_group,
-  pattern = 'txtar',
-  callback = function(args)
-    require('txtar').attach(args.buf)
-  end,
-})
-
 -- vim: ts=2 sts=2 sw=2 et
