@@ -21,6 +21,13 @@ return {
       desc = 'Test: Run file',
     },
     {
+      "<leader>ta",
+      function()
+        require('neotest').run.run(vim.loop.cwd())
+      end,
+      desc = 'Run all tests (project)',
+    },
+    {
       '<leader>tl',
       function()
         require('neotest').run.run_last()
@@ -52,7 +59,9 @@ return {
   config = function()
     require('neotest').setup {
       adapters = {
-        require 'neotest-golang',
+        require('neotest-golang') {
+          go_test_args = { '-v', '-race', '-count=1', '-timeout=60s' },
+        },
       },
     }
   end,
