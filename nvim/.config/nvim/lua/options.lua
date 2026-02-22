@@ -53,4 +53,18 @@ vim.opt.cursorline = true
 -- Minimal number of screen lines to keep above and below the cursor.
 vim.opt.scrolloff = 10
 
+vim.api.nvim_create_autocmd('FileType', {
+  desc = 'Start Tree-sitter highlighting when a parser exists',
+  group = vim.api.nvim_create_augroup('treesitter-start', { clear = true }),
+  callback = function(args)
+    local ok = pcall(vim.treesitter.start, args.buf)
+    if not ok then
+      local ft = vim.bo[args.buf].filetype
+      if ft ~= '' then
+        vim.bo[args.buf].syntax = ft
+      end
+    end
+  end,
+})
+
 -- vim: ts=2 sts=2 sw=2 et

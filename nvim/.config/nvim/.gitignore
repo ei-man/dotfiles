@@ -4,4 +4,5 @@ test.sh
 nvim
 
 spell/
-
+parser/txtar/parser.so
+parser/txtar/src/
