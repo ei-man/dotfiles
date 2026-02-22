@@ -1,14 +1,16 @@
 {
   "permissions": {
     "allow": [
-      "Read(**)",
+      "Read(/)",
       "WebFetch(*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(go*)",
+      "Bash(docker*)"
     ]
   },
   "sandbox": {
     "enabled": true,
     "autoAllowBashIfSandboxed": true
   },
-  "effortLevel": "high"
+  "effortLevel": "medium"
 }
