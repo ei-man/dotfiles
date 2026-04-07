@@ -13,6 +13,10 @@ if status is-login
     end
 end
 
+function windows
+    sudo efibootmgr --bootnext 0000 && sudo reboot
+end
+
 # overwrite greeting
 # potentially disabling fastfetch
 #function fish_greeting

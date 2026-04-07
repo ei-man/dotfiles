@@ -26,7 +26,7 @@ return {
       vim.env.PATH = vim.fn.stdpath('data') .. '/mason/bin:' .. vim.env.PATH
 
       require('mason-lspconfig').setup {
-        ensure_installed = { 'lua_ls', 'gopls' },
+        ensure_installed = { 'lua_ls', 'gopls', 'ts_ls' },
         automatic_enable = false,
       }
 
@@ -69,7 +69,7 @@ return {
         },
       })
 
-      vim.lsp.enable({ 'lua_ls', 'gopls' })
+      vim.lsp.enable({ 'lua_ls', 'gopls', 'ts_ls' })
 
       vim.api.nvim_create_autocmd('LspAttach', {
         group = vim.api.nvim_create_augroup('lsp-attach', { clear = true }),
