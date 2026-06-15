@@ -1,3 +1,4 @@
 zsh/.config/zsh/.zsh_sessions/*
 fish/.config/fish/fish_variables
-systemd/.config/systemd/user/default.target.wants
+systemd/.config/systemd/user/*.target.wants
+easyeffects/.config/easyeffects/db/*.lock
