@@ -8,9 +8,14 @@
       "Bash(docker*)"
     ]
   },
+  "model": "claude-opus-4-5",
   "sandbox": {
     "enabled": true,
     "autoAllowBashIfSandboxed": true
   },
-  "effortLevel": "medium"
+  "effortLevel": "high",
+  "tui": "default",
+  "skipDangerousModePermissionPrompt": true,
+  "editorMode": "vim",
+  "remoteControlAtStartup": true
 }

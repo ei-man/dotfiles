@@ -1,6 +1,7 @@
 source /usr/share/cachyos-fish-config/cachyos-config.fish
 
 alias vim=nvim
+alias disks="duf"
 
 set -gx EDITOR nvim
 set -gx VISUAL nvim
