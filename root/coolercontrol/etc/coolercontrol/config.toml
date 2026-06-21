@@ -1,0 +1,78 @@
+# This is the CoolerControl configuration file.
+# -------------------------------
+
+[devices]
+9a64f7a5c7b59e073064f69eea496b0424b867bb35c843c28825f6d4a73aeba5 = "gigabyte_wmi"
+fa49f4645cba12961942172e0455e53675b4adbc2ed077a740863e40266e9803 = "it8688"
+e8691a9a278410b3ece2f9f98dc8cffe19e3a8a247dbc02f9317af5697f642ba = "NVIDIA GeForce RTX 4080"
+631becd7b71957c2c91892d40e47448c55dda8710a760abe103e79d17caf37f1 = "AMD Ryzen 7 5700X3D 8-Core Processor"
+efa9b5833e2858d5afe26243b7cea8054e6a0140d985488b9bef08f09c92b6ce = "nvme0"
+b66e1f417b1d1aad2be0f597cea17e63db83a905640ec182e4ba558dcbee70da = "nvme1"
+19e098e312e1b1b39163a343ea22b6ea17f18ec1a803ffe0ce44f5bacd6076ee = "Custom Sensors"
+f42333b13a2853dfb8e516c576470622e74a4659bfffe7ca229f68733beae979 = "acpitz"
+
+[legacy690]
+
+# Custom Sensor: Max of CPU and GPU temps
+[[custom_sensors]]
+id = "max_cpu_gpu"
+cs_type = "Mix"
+mix_function = "Max"
+
+[[custom_sensors.sources]]
+weight = 1
+temp_source = { temp_name = "temp1", device_uid = "631becd7b71957c2c91892d40e47448c55dda8710a760abe103e79d17caf37f1" }
+
+[[custom_sensors.sources]]
+weight = 1
+temp_source = { temp_name = "GPU Temp", device_uid = "e8691a9a278410b3ece2f9f98dc8cffe19e3a8a247dbc02f9317af5697f642ba" }
+
+# Device Settings - assign profile to fans
+[device-settings]
+
+[device-settings.fa49f4645cba12961942172e0455e53675b4adbc2ed077a740863e40266e9803]
+fan1 = { profile_uid = "quiet-curve" }
+fan2 = { profile_uid = "quiet-curve" }
+fan3 = { profile_uid = "quiet-curve" }
+fan4 = { profile_uid = "quiet-curve" }
+fan5 = { profile_uid = "quiet-curve" }
+
+# Profiles
+[[profiles]]
+uid = "0"
+name = "Unmanaged"
+p_type = "Default"
+function = "0"
+
+[[profiles]]
+uid = "quiet-curve"
+name = "Quiet Curve"
+p_type = "Graph"
+function_uid = "smooth-function"
+speed_profile = [[40.0, 16], [50.0, 30], [60.0, 50], [70.0, 75], [80.0, 100]]
+temp_source = { temp_name = "max_cpu_gpu", device_uid = "19e098e312e1b1b39163a343ea22b6ea17f18ec1a803ffe0ce44f5bacd6076ee" }
+
+# Functions
+[[functions]]
+uid = "0"
+name = "Default Function"
+f_type = "Identity"
+
+[[functions]]
+uid = "smooth-function"
+name = "Smooth Function"
+f_type = "Standard"
+deviance = 3.0
+response_delay = 3
+only_downward = true
+
+# Settings
+[settings]
+apply_on_boot = true
+liquidctl_integration = true
+hide_duplicate_devices = true
+no_init = false
+startup_delay = 2
+thinkpad_full_speed = false
+compress_payload = true
+drivetemp_suspend = false

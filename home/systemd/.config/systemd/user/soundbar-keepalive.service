@@ -1,0 +1,11 @@
+[Unit]
+Description=Keep soundbar awake with silent audio
+After=pipewire.service
+
+[Service]
+ExecStart=/usr/bin/mpv --loop=inf --no-video --volume=100 %h/.local/share/soundbar-keepalive/silent.wav
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
