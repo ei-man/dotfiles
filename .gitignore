@@ -1,4 +1,8 @@
-zsh/.config/zsh/.zsh_sessions/*
-fish/.config/fish/fish_variables
-systemd/.config/systemd/user/*.target.wants
-easyeffects/.config/easyeffects/db/*.lock
+home/zsh/.config/zsh/.zsh_sessions/*
+home/zsh/.config/zsh/.zcompdump*
+home/fish/.config/fish/fish_variables
+home/systemd/.config/systemd/user/*.target.wants
+home/easyeffects/.config/easyeffects/db/*.lock
+
+# machine-local Claude Code settings
+**/.claude/settings.local.json
