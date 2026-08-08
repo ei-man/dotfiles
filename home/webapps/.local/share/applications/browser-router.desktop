@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Browser Router
+Comment=Opens YouTube, YouTube Music and Spotify links in Firefox, everything else in Chrome
+Exec=/home/eimas/.local/bin/browser-router %U
+Type=Application
+Terminal=false
+NoDisplay=true
+Icon=google-chrome
+MimeType=text/html;x-scheme-handler/http;x-scheme-handler/https;

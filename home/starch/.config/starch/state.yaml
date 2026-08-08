@@ -297,6 +297,7 @@ package_groups:
             - ydotool
             - yt-dlp
             - zip
+            - nushell
     aur:
         tool: paru
         aliases:

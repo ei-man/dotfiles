@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=YouTube (Firefox)
+StartupWMClass=youtube
+Exec=/home/eimas/.local/bin/browser-router "https://www.youtube.com"
+Type=Application
+Icon=youtube

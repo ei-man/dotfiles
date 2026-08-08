@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Route to Firefox",
+  "version": "1.0.0",
+  "description": "Opens YouTube, YouTube Music and Spotify links in their dedicated Firefox windows instead of Chrome.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxhTAGiuvaWyfN9320qbtFI+CZobVSvvR7V4nvHzLbEnhQUwAnVdKI2B3DEPTZksgE/Q+MGhPScfgJ6AJWhXURHirD7DqjK0+cuHkYA5pXN09aZAPay4wthGDz1kDmr9kpNGR39SbkNf7NQkLZTkLaZkUGeQMHNh/ua3jMmXoF1LhwPewC3j95qDFHZJ0+c6WtNq7O7DqhXavCqbIG9XqdupHRFb9xb/+arzRSOwZ5Bt5mpt8tWLgH7nslmMmr96jY9F9qN4spaL6HQz94ZBITWPCrK1fjbL6q22ycvwR/aIBQdz4rIdWLl1j44UQqannnoAX1je4OAOaFDLqOZ9CLQIDAQAB",
+  "permissions": [
+    "tabs",
+    "webNavigation",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "*://*.youtube.com/*",
+    "*://*.youtube-nocookie.com/*",
+    "*://youtu.be/*",
+    "*://*.youtu.be/*",
+    "*://*.spotify.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

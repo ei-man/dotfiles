@@ -1,0 +1,27 @@
+[Desktop Entry]
+# Overrides /usr/share/applications/google-chrome.desktop, which ships two
+# conflicting StartupWMClass keys in [Desktop Entry] ("Google-chrome" and
+# "google-chrome") and fails desktop-file-validate. Parsers that take the first
+# value get the capitalised form, which never matches the Wayland app_id, so the
+# window ends up with no icon. This file declares it exactly once.
+Version=1.0
+Name=Google Chrome
+GenericName=Web Browser
+Comment=Access the Internet
+Exec=/usr/bin/google-chrome-stable %U
+StartupNotify=true
+StartupWMClass=google-chrome
+Terminal=false
+Icon=google-chrome
+Type=Application
+Categories=Network;WebBrowser;
+MimeType=application/pdf;application/rdf+xml;application/rss+xml;application/xhtml+xml;application/xhtml_xml;application/xml;image/gif;image/jpeg;image/png;image/webp;text/html;text/xml;x-scheme-handler/http;x-scheme-handler/https;x-scheme-handler/google-chrome;
+Actions=new-window;new-private-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=/usr/bin/google-chrome-stable
+
+[Desktop Action new-private-window]
+Name=New Incognito Window
+Exec=/usr/bin/google-chrome-stable --incognito

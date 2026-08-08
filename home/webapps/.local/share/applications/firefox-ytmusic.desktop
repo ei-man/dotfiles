@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=YouTube Music (Firefox)
+StartupWMClass=ytmusic
+Exec=/home/eimas/.local/bin/browser-router "https://music.youtube.com"
+Type=Application
+Icon=youtube-music

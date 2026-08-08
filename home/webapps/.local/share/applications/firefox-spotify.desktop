@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Spotify (Firefox)
+StartupWMClass=spotify
+Exec=/home/eimas/.local/bin/browser-router "https://open.spotify.com"
+Type=Application
+Icon=spotify

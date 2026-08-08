@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Send a URL to the browser that should own it.
+#
+#   music.youtube.com   -> Firefox "ytmusic" profile   (workspace 5)
+#   youtube.com/youtu.be -> Firefox "youtube" profile  (workspace 2)
+#   *.spotify.com       -> Firefox "spotify" profile   (workspace 6)
+#   everything else     -> Google Chrome
+#
+# Registered as the system http/https handler via browser-router.desktop, and
+# called by the Chrome "Route to Firefox" extension through its native-messaging
+# host (browser-router-nm) for links clicked inside Chrome itself.
+#
+# Each Firefox profile gets its own MOZ_APP_REMOTINGNAME so it runs as an
+# independent instance *and* still accepts handed-off URLs — plain --no-remote
+# would refuse the second invocation with a "profile in use" dialog.
+
+set -u
+
+CHROME=/usr/bin/google-chrome-stable
+focus=1
+workspace=
+
+while :; do
+    case "${1-}" in
+        --no-focus)
+            focus=0
+            shift ;;
+        # Park the profile window on a fixed workspace instead of leaving it
+        # wherever it maps. Only the Hyprland autostart entries pass this; a
+        # link clicked later should open on the workspace you are already on.
+        # Ignored for URLs that go to Chrome, which has no profile window.
+        --workspace)
+            workspace=$2
+            shift 2 ;;
+        *)
+            break ;;
+    esac
+done
+
+# Lowercase hostname of an http(s) URL; empty for anything else.
+host_of() {
+    printf '%s' "$1" \
+        | sed -nE 's#^[Hh][Tt][Tt][Pp][Ss]?://([^/?#]*).*#\1#p' \
+        | sed -E 's/^.*@//; s/:[0-9]+$//' \
+        | tr '[:upper:]' '[:lower:]'
+}
+
+profile_for() {
+    case "$1" in
+        music.youtube.com)
+            echo ytmusic ;;
+        youtube.com|*.youtube.com|youtu.be|*.youtu.be|youtube-nocookie.com|*.youtube-nocookie.com)
+            echo youtube ;;
+        spotify.com|*.spotify.com)
+            echo spotify ;;
+        *)
+            echo "" ;;
+    esac
+}
+
+launch_firefox() {
+    MOZ_APP_REMOTINGNAME="$1" setsid -f firefox -P "$1" --name "$1" "$2" \
+        >/dev/null 2>&1
+}
+
+# Wait for the window to exist, then pull its workspace up. Runs detached so the
+# calling app is not blocked while Firefox cold-starts.
+focus_window() {
+    command -v hyprctl >/dev/null 2>&1 || return 0
+    for _ in $(seq 40); do
+        if hyprctl clients -j 2>/dev/null | grep -q "\"class\": *\"$1\""; then
+            hyprctl dispatch focuswindow "class:^$1\$" >/dev/null 2>&1
+            return 0
+        fi
+        sleep 0.25
+    done
+}
+
+# Same wait, but drags the window to $2 without following it there.
+place_window() {
+    command -v hyprctl >/dev/null 2>&1 || return 0
+    for _ in $(seq 40); do
+        if hyprctl clients -j 2>/dev/null | grep -q "\"class\": *\"$1\""; then
+            hyprctl dispatch movetoworkspacesilent "$2,class:^$1\$" >/dev/null 2>&1
+            return 0
+        fi
+        sleep 0.25
+    done
+}
+
+if [ $# -eq 0 ]; then
+    exec setsid -f "$CHROME"
+fi
+
+for url; do
+    profile=$(profile_for "$(host_of "$url")")
+    if [ -n "$profile" ]; then
+        launch_firefox "$profile" "$url"
+        if [ -n "$workspace" ]; then
+            place_window "$profile" "$workspace" &
+        fi
+        if [ "$focus" = 1 ]; then
+            focus_window "$profile" &
+        fi
+    else
+        setsid -f "$CHROME" "$url" >/dev/null 2>&1
+    fi
+done

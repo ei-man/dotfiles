@@ -1,0 +1,9 @@
+{
+  "name": "com.eimas.browser_router",
+  "description": "Routes YouTube, YouTube Music and Spotify links from Chrome to Firefox",
+  "path": "/home/eimas/.local/bin/browser-router-nm",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://mbgcbdkpiljplglemefmplpnnnadafni/"
+  ]
+}
