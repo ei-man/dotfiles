@@ -17,6 +17,7 @@
 set -u
 
 CHROME=/usr/bin/google-chrome-stable
+CHROME_CLASS=google-chrome
 focus=1
 workspace=
 
@@ -104,5 +105,8 @@ for url; do
         fi
     else
         setsid -f "$CHROME" "$url" >/dev/null 2>&1
+        if [ "$focus" = 1 ]; then
+            focus_window "$CHROME_CLASS" &
+        fi
     fi
 done
