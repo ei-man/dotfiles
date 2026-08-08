@@ -12,7 +12,6 @@ dotfiles/
 │   └── ...
 ├── root/          # System configs (/)
 │   └── coolercontrol/
-├── stow/
 └── install.sh
 ```
 

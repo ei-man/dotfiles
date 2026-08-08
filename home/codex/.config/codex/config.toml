@@ -10,18 +10,8 @@ trust_level = "trusted"
 [projects."/home/eimas/dotfiles"]
 trust_level = "trusted"
 
-[projects."/mnt/c/Users/eimas/Projects/tve3"]
-trust_level = "trusted"
-
 [projects."/home/eimas/Projects/TypeScriptAddonTemplate-Fork"]
 trust_level = "trusted"
 
 [projects."/mnt/shared_data/home-system"]
 trust_level = "trusted"
-
-[notice.model_migrations]
-"gpt-5.2-codex" = "gpt-5.3-codex"
-"gpt-5.3-codex" = "gpt-5.4"
-
-[tui.model_availability_nux]
-"gpt-5.5" = 3
