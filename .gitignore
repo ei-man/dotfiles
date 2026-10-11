@@ -4,3 +4,7 @@ home/easyeffects/.config/easyeffects/db/*.lock
 
 # machine-local Claude Code settings
 **/.claude/settings.local.json
+
+# Claude-managed skill copies (re-synced from claude.ai) and its trash
+home/claude/.claude/skills/synced/
+home/claude/.claude/skills/.trash/

@@ -1,0 +1,431 @@
+#!/usr/bin/env node
+'use strict';
+/*
+ * chrome-cdp-proxy -- hold one user-approved CDP connection to the live Chrome
+ * profile open, and re-serve it on a fixed local endpoint.
+ *
+ * Why this exists
+ * ---------------
+ * Chrome 136+ silently ignores --remote-debugging-port (and --remote-debugging-pipe)
+ * when the data directory is the default one, so the only way to drive the real,
+ * logged-in profile is the consent route: enable it once on
+ * chrome://inspect/#remote-debugging, then approve an Allow dialog for every new
+ * WebSocket connection. The grant is per *connection*, not per browser -- a second
+ * connection to the same browser UUID hangs until it is approved too.
+ *
+ * That means any tool connecting directly (chrome-devtools-mcp --autoConnect, a
+ * script, anything) costs a click every time it starts. This daemon connects once,
+ * at login, and re-serves that single approved connection on 127.0.0.1:9223 with
+ * the same shape Chrome itself uses (/json/version + a browser WebSocket). Tools
+ * point at the proxy and never trigger a prompt.
+ *
+ *   Chrome  <--one approved WS--  proxy  <--unlimited, unprompted--  tools
+ *
+ * Cost of the click therefore drops to once per Chrome launch. Chrome remembers
+ * the *enable* toggle across restarts (Local State: devtools.remote_debugging
+ * user-enabled), so nothing else needs doing at boot.
+ *
+ * Note this is deliberately NOT isolation: the connection is browser-wide, so
+ * whatever attaches through the proxy can see and drive every tab in the profile.
+ *
+ * Only one downstream client is served at a time; a new one displaces the old,
+ * which is what you want when a tool restarts and the previous socket is stale.
+ * CDP is JSON text, so frames are piped as text and never re-encoded.
+ */
+
+const crypto = require('crypto');
+const fs = require('fs');
+const http = require('http');
+const path = require('path');
+const { spawnSync } = require('child_process');
+
+const HOME = process.env.HOME;
+const CHROME_DIR = process.env.CDP_CHROME_DIR || path.join(HOME, '.config/google-chrome');
+const PORT = Number(process.env.CDP_PROXY_PORT || 9223);
+const WORKSPACE = process.env.CDP_PROXY_WORKSPACE || '10';
+const INSPECT_URL = 'chrome://inspect/#remote-debugging';
+const WS_PATH = '/devtools/browser/proxy';
+
+// Our own CDP calls share the pipe with the client's, so keep their ids in a
+// range no real client will reach and strip the replies on the way back.
+const INTERNAL_ID_BASE = 1e9;
+
+const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
+
+// ---------------------------------------------------------------- ws framing
+const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'; // RFC 6455 s1.3
+
+const acceptKey = (key) =>
+  crypto.createHash('sha1').update(key + GUID).digest('base64');
+
+function encodeFrame(opcode, payload) {
+  const len = payload.length;
+  let header;
+  if (len < 126) {
+    header = Buffer.alloc(2);
+    header[1] = len;
+  } else if (len < 65536) {
+    header = Buffer.alloc(4);
+    header[1] = 126;
+    header.writeUInt16BE(len, 2);
+  } else {
+    header = Buffer.alloc(10);
+    header[1] = 127;
+    header.writeBigUInt64BE(BigInt(len), 2);
+  }
+  header[0] = 0x80 | opcode; // FIN, server frames are never masked
+  return Buffer.concat([header, payload]);
+}
+
+/** Incremental parser for masked client frames, incl. fragmentation. */
+class FrameReader {
+  constructor(handlers) {
+    this.buf = Buffer.alloc(0);
+    this.frag = [];
+    this.h = handlers;
+  }
+
+  push(chunk) {
+    this.buf = Buffer.concat([this.buf, chunk]);
+    for (;;) {
+      if (this.buf.length < 2) return;
+      const b0 = this.buf[0];
+      const b1 = this.buf[1];
+      const fin = (b0 & 0x80) !== 0;
+      const opcode = b0 & 0x0f;
+      const masked = (b1 & 0x80) !== 0;
+      let len = b1 & 0x7f;
+      let off = 2;
+      if (len === 126) {
+        if (this.buf.length < 4) return;
+        len = this.buf.readUInt16BE(2);
+        off = 4;
+      } else if (len === 127) {
+        if (this.buf.length < 10) return;
+        len = Number(this.buf.readBigUInt64BE(2));
+        off = 10;
+      }
+      let mask = null;
+      if (masked) {
+        if (this.buf.length < off + 4) return;
+        mask = this.buf.subarray(off, off + 4);
+        off += 4;
+      }
+      if (this.buf.length < off + len) return;
+
+      const payload = Buffer.from(this.buf.subarray(off, off + len));
+      if (mask) for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i & 3];
+      this.buf = this.buf.subarray(off + len);
+
+      if (opcode === 0x8) return this.h.close();
+      if (opcode === 0x9) { this.h.pong(payload); continue; }
+      if (opcode === 0xa) continue;
+
+      if (opcode === 0x0) this.frag.push(payload);
+      else this.frag = [payload];
+      if (fin) {
+        const msg = Buffer.concat(this.frag).toString('utf8');
+        this.frag = [];
+        this.h.message(msg);
+      }
+    }
+  }
+}
+
+// -------------------------------------------------------------------- state
+let up = null;             // WebSocket to Chrome (the approved one)
+let client = null;         // net.Socket of the current downstream tool
+let sessions = new Set();  // CDP sessions the current client opened
+let version = {};          // cached Browser.getVersion payload
+let internalId = INTERNAL_ID_BASE;
+const pending = new Map(); // internal id -> resolve
+
+function upstreamEndpoint() {
+  const file = path.join(CHROME_DIR, 'DevToolsActivePort');
+  const [rawPort, rawPath] = fs.readFileSync(file, 'utf8').trim().split('\n');
+  const port = Number(rawPort);
+  if (!port || !rawPath) throw new Error(`unusable ${file}`);
+  return `ws://127.0.0.1:${port}${rawPath.trim()}`;
+}
+
+function call(method, params = {}) {
+  return new Promise((resolve, reject) => {
+    if (!up || up.readyState !== 1) return reject(new Error('upstream down'));
+    const id = ++internalId;
+    pending.set(id, resolve);
+    up.send(JSON.stringify({ id, method, params }));
+    setTimeout(() => {
+      if (pending.delete(id)) reject(new Error(`${method} timed out`));
+    }, 10000);
+  });
+}
+
+function toClient(text) {
+  if (!client || client.destroyed) return;
+  // Chrome ties a session's lifetime to the connection that opened it -- and
+  // that connection is ours, not the client's, so nothing is cleaned up when a
+  // client goes away. Note every session handed out so we can detach them
+  // ourselves; otherwise the next client finds every target already attached
+  // and sees an empty page list. Attach traffic is always small, so skipping
+  // large payloads (screenshots) keeps this off the hot path.
+  if (text.length < 4096) {
+    for (const m of text.matchAll(/"sessionId":"([A-Z0-9]+)"/g)) sessions.add(m[1]);
+  }
+  client.write(encodeFrame(0x1, Buffer.from(text, 'utf8')));
+}
+
+function releaseSessions() {
+  if (!sessions.size) return;
+  const n = sessions.size;
+  for (const sessionId of sessions) {
+    call('Target.detachFromTarget', { sessionId }).catch(() => {});
+  }
+  sessions.clear();
+  log(`detached ${n} leftover session(s)`);
+}
+
+// ------------------------------------------------------------------ hyprland
+function hyprctl(args) {
+  const sigDir = path.join(process.env.XDG_RUNTIME_DIR || '/run/user/1000', 'hypr');
+  let sig = process.env.HYPRLAND_INSTANCE_SIGNATURE;
+  if (!sig) {
+    try {
+      sig = fs.readdirSync(sigDir)
+        .map((d) => ({ d, t: fs.statSync(path.join(sigDir, d)).mtimeMs }))
+        .sort((a, b) => b.t - a.t)[0]?.d;
+    } catch { /* not running under Hyprland */ }
+  }
+  if (!sig) return null;
+  const r = spawnSync('hyprctl', args, {
+    encoding: 'utf8',
+    env: { ...process.env, HYPRLAND_INSTANCE_SIGNATURE: sig },
+  });
+  return r.status === 0 ? r.stdout : null;
+}
+
+function chromeWindows() {
+  const out = hyprctl(['clients', '-j']);
+  if (!out) return [];
+  try {
+    return JSON.parse(out).filter((c) => c.class === 'google-chrome');
+  } catch {
+    return [];
+  }
+}
+
+/** Park a freshly created window on the automation workspace, without focus. */
+function placeWindow(address) {
+  hyprctl(['dispatch', 'movetoworkspacesilent', `${WORKSPACE},address:${address}`]);
+  log(`placed ${address} on workspace ${WORKSPACE}`);
+}
+
+function notify(body) {
+  spawnSync('notify-send', ['-a', 'chrome-cdp-proxy', '-u', 'critical',
+    'Chrome debugging', body], { stdio: 'ignore' });
+}
+
+/*
+ * The consent dialog is raised by the chrome://inspect page, so that tab has to
+ * exist for the next boot's connection to be approvable -- and Chrome refuses
+ * chrome:// URLs from the command line, so it can only be created over CDP,
+ * i.e. right now, while we hold an approved connection. Session restore then
+ * brings it back on every subsequent launch.
+ */
+async function ensureInspectWindow() {
+  const { targetInfos } = await call('Target.getTargets');
+  const open = targetInfos.filter(
+    (t) => t.type === 'page' && t.url.startsWith('chrome://inspect'));
+  if (open.length) {
+    log(`inspect tab already open (${open.length})`);
+    return;
+  }
+  const before = new Set(chromeWindows().map((c) => c.address));
+  await call('Target.createTarget', { url: INSPECT_URL, newWindow: true });
+  log('created inspect window');
+
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    const fresh = chromeWindows().find((c) => !before.has(c.address));
+    if (fresh) return placeWindow(fresh.address);
+  }
+  log('new window never showed up in hyprctl; leaving it where it is');
+}
+
+// ------------------------------------------------------------------ upstream
+let backoff = 2000;
+// One notification per stretch of waiting, not per retry -- an unattended
+// machine would otherwise stack up a wall of identical popups.
+let nagged = false;
+
+function connectUpstream() {
+  let endpoint;
+  try {
+    endpoint = upstreamEndpoint();
+  } catch (e) {
+    log(`waiting for Chrome: ${e.message}`);
+    return setTimeout(connectUpstream, 5000);
+  }
+
+  log(`connecting to ${endpoint}`);
+  const ws = new WebSocket(endpoint);
+
+  // The handshake simply stalls until the Allow dialog is answered, so a slow
+  // open is expected rather than an error -- say so instead of looking hung.
+  const nag = setTimeout(() => {
+    log('awaiting approval: click Allow on chrome://inspect/#remote-debugging');
+    if (!nagged) {
+      notify('Click Allow on chrome://inspect to let tools drive this profile.');
+      nagged = true;
+    }
+  }, 3000);
+
+  ws.onopen = async () => {
+    clearTimeout(nag);
+    up = ws;
+    backoff = 2000;
+    nagged = false;
+    log('connected (approved)');
+    try {
+      version = await call('Browser.getVersion');
+      log(`browser: ${version.product}`);
+      await ensureInspectWindow();
+    } catch (e) {
+      log(`post-connect setup failed: ${e.message}`);
+    }
+  };
+
+  ws.onmessage = (ev) => {
+    const text = typeof ev.data === 'string' ? ev.data : String(ev.data);
+    const m = /^\{"id":(\d+)/.exec(text);
+    if (m && Number(m[1]) > INTERNAL_ID_BASE) {
+      const resolve = pending.get(Number(m[1]));
+      if (resolve) {
+        pending.delete(Number(m[1]));
+        let parsed = {};
+        try { parsed = JSON.parse(text).result || {}; } catch { /* ignore */ }
+        resolve(parsed);
+        return; // ours, never the client's business
+      }
+    }
+    toClient(text);
+  };
+
+  ws.onerror = () => { /* close always follows; handled there */ };
+
+  ws.onclose = () => {
+    clearTimeout(nag);
+    if (up === ws) up = null;
+    pending.clear();
+    sessions.clear(); // Chrome is gone; these died with it
+    if (client && !client.destroyed) client.destroy();
+    log(`upstream closed, retrying in ${backoff / 1000}s`);
+    setTimeout(connectUpstream, backoff);
+    backoff = Math.min(backoff * 2, 30000);
+  };
+}
+
+// ---------------------------------------------------------------- downstream
+function attachClient(socket, head) {
+  if (client && !client.destroyed) {
+    log('displacing previous client');
+    const stale = client;
+    client = null;          // so the old socket's close handler is a no-op
+    releaseSessions();      // ...and its sessions go now, before the new client
+    stale.destroy();
+  }
+  client = socket;
+  socket.setNoDelay(true);
+
+  const reader = new FrameReader({
+    message: (text) => { if (up && up.readyState === 1) up.send(text); },
+    pong: (payload) => socket.write(encodeFrame(0xa, payload)),
+    close: () => socket.end(encodeFrame(0x8, Buffer.alloc(0))),
+  });
+
+  socket.on('data', (chunk) => {
+    try {
+      reader.push(chunk);
+    } catch (e) {
+      log(`frame error: ${e.message}`);
+      socket.destroy();
+    }
+  });
+  socket.on('error', () => socket.destroy());
+  socket.on('close', () => {
+    if (client === socket) {
+      client = null;
+      releaseSessions();
+    }
+    log('client gone');
+  });
+
+  if (head && head.length) reader.push(head);
+  log('client attached');
+}
+
+const server = http.createServer((req, res) => {
+  const json = (code, obj) => {
+    const body = JSON.stringify(obj);
+    res.writeHead(code, {
+      'Content-Type': 'application/json; charset=UTF-8',
+      'Content-Length': Buffer.byteLength(body),
+    });
+    res.end(body);
+  };
+
+  // Enough of Chrome's endpoint for puppeteer's --browserUrl discovery.
+  if (req.url.startsWith('/json/version')) {
+    return json(200, {
+      Browser: version.product || 'Chrome',
+      'Protocol-Version': version.protocolVersion || '1.3',
+      'User-Agent': version.userAgent || '',
+      'V8-Version': version.jsVersion || '',
+      'WebKit-Version': version.revision || '',
+      webSocketDebuggerUrl: `ws://127.0.0.1:${PORT}${WS_PATH}`,
+    });
+  }
+  if (req.url.startsWith('/status')) {
+    return json(200, {
+      upstream: up && up.readyState === 1 ? 'connected' : 'down',
+      client: client && !client.destroyed ? 'attached' : 'none',
+      browser: version.product || null,
+    });
+  }
+  json(404, {});
+});
+
+server.on('upgrade', (req, socket, head) => {
+  const key = req.headers['sec-websocket-key'];
+  if (!key || (req.headers.upgrade || '').toLowerCase() !== 'websocket') {
+    return socket.destroy();
+  }
+  if (!up || up.readyState !== 1) {
+    log('rejecting client: upstream not connected');
+    return socket.end('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+  }
+  // No Sec-WebSocket-Extensions in the reply: declining permessage-deflate keeps
+  // both sides on plain frames, which is all a JSON pipe needs.
+  socket.write(
+    'HTTP/1.1 101 Switching Protocols\r\n' +
+    'Upgrade: websocket\r\n' +
+    'Connection: Upgrade\r\n' +
+    `Sec-WebSocket-Accept: ${acceptKey(key)}\r\n\r\n`);
+  attachClient(socket, head);
+});
+
+server.on('error', (e) => {
+  log(`listen failed: ${e.message}`);
+  process.exit(1);
+});
+
+server.listen(PORT, '127.0.0.1', () => {
+  log(`listening on http://127.0.0.1:${PORT} (ws ${WS_PATH})`);
+  connectUpstream();
+});
+
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => {
+    log(`${sig}, shutting down`);
+    process.exit(0);
+  });
+}

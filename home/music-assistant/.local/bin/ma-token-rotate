@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Keep the Music Assistant 'claude-code' API token alive.
+
+MA long-lived tokens expire after exactly 365 days and are never extended on use. When the token in
+~/.config/music-assistant/token.env has less than ROTATE_BEFORE_DAYS left (or with --force), this
+creates a fresh 'claude-code' token with the current one, checks that the new token works, swaps it
+into token.env, and only then revokes the old one. Run monthly by ma-token-rotate.timer.
+"""
+import datetime, json, os, sys, urllib.request
+
+ENV = os.path.expanduser("~/.config/music-assistant/token.env")
+NAME = "claude-code"
+ROTATE_BEFORE_DAYS = 60
+
+
+def load_env():
+    env = {}
+    for line in open(ENV):
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            env[k] = v
+    return env
+
+
+def call(url, token, command, **args):
+    req = urllib.request.Request(f"{url}/api", method="POST",
+                                 data=json.dumps({"command": command, "args": args}).encode(),
+                                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        body = r.read()
+        return json.loads(body) if body else None
+
+
+def write_env(url, token):
+    tmp = ENV + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(f"# Music Assistant long-lived token '{NAME}' (admin), rotated {datetime.date.today()} "
+                f"by ma-token-rotate; MA expires these after 1 year\n")
+        f.write(f"MA_URL={url}\nMA_TOKEN={token}\n")
+    os.replace(tmp, ENV)
+
+
+def main():
+    force = "--force" in sys.argv
+    env = load_env()
+    url, old = env["MA_URL"], env["MA_TOKEN"]
+
+    before = call(url, old, "auth/tokens")
+    mine = [t for t in before if t["name"] == NAME]
+    if not mine:
+        sys.exit(f"no '{NAME}' token found in Music Assistant; recreate it by hand")
+    expires = min(datetime.datetime.fromisoformat(t["expires_at"]) for t in mine)
+    left = (expires - datetime.datetime.now(datetime.timezone.utc)).days
+    if left > ROTATE_BEFORE_DAYS and not force:
+        print(f"token valid for {left} more days (until {expires.date()}); nothing to do")
+        return
+
+    new = call(url, old, "auth/token/create", name=NAME)
+    if call(url, new, "auth/me").get("username") is None:
+        sys.exit("new token did not authenticate; keeping the old one")
+    write_env(url, new)
+
+    # the new token's id is the one that was not there before; revoke every older 'claude-code' token
+    old_ids = {t["token_id"] for t in mine}
+    after = call(url, new, "auth/tokens")
+    new_ids = [t["token_id"] for t in after if t["name"] == NAME and t["token_id"] not in old_ids]
+    for tid in old_ids:
+        call(url, new, "auth/token/revoke", token_id=tid)
+    new_exp = next(t["expires_at"] for t in after if t["token_id"] in new_ids)[:10]
+    print(f"rotated: old token had {left} days left; new token valid until {new_exp}; revoked {len(old_ids)} old")
+
+
+if __name__ == "__main__":
+    main()

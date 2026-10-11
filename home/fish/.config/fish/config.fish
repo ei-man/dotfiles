@@ -6,6 +6,10 @@ set -gx CLAUDE_CODE_FORCE_SYNC_OUTPUT 1
 alias vim=nvim
 alias disks="duf"
 
+# Look before adopting: expands in place, so drop --dry-run to actually do it,
+# and append a cse_ id to take one named session instead of every loose one.
+abbr -a claude-adopt 'claude-remote-restore --adopt --dry-run'
+
 set -gx EDITOR nvim
 set -gx VISUAL nvim
 set -gx SYSTEMD_EDITOR nvim

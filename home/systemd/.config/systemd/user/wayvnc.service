@@ -1,0 +1,22 @@
+[Unit]
+Description=wayvnc VNC server for the Hyprland session (Tailscale only)
+# Hyprland does not start graphical-session.target here; the restart loop
+# below waits for the compositor socket and for tailscaled's address instead.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# -r paints the cursor into the frame: the separate cursor-capture session
+# fails on this Hyprland and wayvnc never retries it, so without this the
+# client sees no pointer at all.
+# Bind to whatever Tailscale IPv4 this node has now (it changed once when the
+# node was re-registered); fail and retry while tailscaled has no address yet.
+ExecStart=/bin/sh -c 'ip=$(tailscale ip -4) && [ -n "$ip" ] && exec /usr/bin/wayvnc --max-fps=30 --render-cursor "$ip"'
+Restart=on-failure
+RestartSec=5
+# Back off to one attempt per 5 min on persistent failure instead of flooding the journal.
+RestartSteps=10
+RestartMaxDelaySec=5min
+
+[Install]
+WantedBy=default.target

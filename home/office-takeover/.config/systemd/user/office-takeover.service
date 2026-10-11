@@ -1,0 +1,11 @@
+[Unit]
+Description=Office speakers: last one wins between this PC and AirPlay senders
+After=pipewire-pulse.service
+
+[Service]
+ExecStart=%h/.local/bin/office-takeover
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

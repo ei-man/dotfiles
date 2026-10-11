@@ -1,0 +1,6 @@
+[Unit]
+Description=Snapshot live Claude Remote Control sessions, and make the restore a boot still owes
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/claude-remote-restore --tick

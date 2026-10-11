@@ -16,7 +16,7 @@
     "enabled": true,
     "autoAllowBashIfSandboxed": true
   },
-  "effortLevel": "high",
+  "effortLevel": "xhigh",
   "tui": "default",
   "skipDangerousModePermissionPrompt": true,
   "theme": "dark",
