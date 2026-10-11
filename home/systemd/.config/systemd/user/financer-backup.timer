@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily financer snapshot to the NUC, ahead of its 21:00 backup
+
+[Timer]
+OnCalendar=*-*-* 20:30
+# catch up if the desktop was off at 20:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target
