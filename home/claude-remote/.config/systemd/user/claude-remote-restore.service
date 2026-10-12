@@ -1,0 +1,6 @@
+[Unit]
+Description=Bring back Claude Remote Control sessions that are not archived
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/claude-remote-restore

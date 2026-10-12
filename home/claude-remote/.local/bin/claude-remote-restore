@@ -1,69 +1,46 @@
 #!/usr/bin/env python3
-"""Bring back every Claude Remote Control session after a reboot or a host crash.
+"""Bring back every Claude Remote Control session that is not archived.
 
-Remote Control sessions carry a `bridgeSessionId`; passing it (with the `cse_`
-prefix) to `claude remote-control --session-id` reattaches the very same
-session, history and all, instead of creating a new one. `claude remote-control
--c` only does this for the single most recent session and only within 4 hours,
-so we track the live set ourselves.
+The server is the record. A session the app still lists (not archived) that no host is
+serving is one this machine owes, whatever took it down: a reboot, a crash, a network
+outage, or a host that shed its sessions and carried on. Archiving a session in the app
+is how it is closed on purpose, and that is the only thing that stops it coming back.
+Sessions that never ran a turn (the empty one a fresh host opens) are left alone.
 
-Four sources of sessions to bring back:
-  * ~/.claude/sessions/<pid>.json — Claude Code's own live-session records.
-    Removed on clean exit, they survive a crash or power cut.
-  * our snapshot (STATE/live.json) — written by `--snapshot` every couple of
-    minutes from a systemd user timer, so sessions also return after a normal
-    shutdown, where Claude Code cleans its records up.
-  * that snapshot's `orphans` — sessions the snapshot saw die together with the
-    terminal serving their folder, i.e. taken down by a crash or by the host
-    giving up on a network outage. They exit through the normal path, so they
-    leave no record behind and the next snapshot would otherwise forget them.
-  * the owed list (STATE/owed.json) — sessions a restore has failed to bring
-    back, and sessions carried over from a snapshot an earlier boot left behind.
-    It outlives any single boot, so a restore that cannot run (or cannot finish)
-    never costs us the memory of what is missing, and the snapshot stays free to
-    keep recording the live set meanwhile. Entries expire after a week.
+Run with no arguments at login (Hyprland exec-once) and every 2 minutes from a systemd
+timer; one run at a time. `--dry-run` prints the plan and changes nothing.
 
-Two ways to bring a session back, because the server allows only one
-`claude remote-control` terminal per folder per device (409 "This folder is
-already served by a terminal"):
-  * its own terminal — for a session alone in its folder.
-  * adoption by one host terminal — for the sessions sharing a folder (the
-    usual case: a host with --spawn=same-dir). Point the folder's
-    bridge-pointer.json at the environment those sessions belong to so the
-    host revives that environment instead of registering a new one, then ask
-    the server to reconnect each session to it, the way the app does.
+How a session comes back. The server allows one `claude remote-control` host per folder
+per device (409 "This folder is already served by a terminal"), a host serves a single
+environment, and a session can only be reconnected to the environment it belongs to (400
+otherwise; there is no moving one). So per folder:
+  * no host running: point the folder's bridge-pointer.json at the environment most of its
+    sessions belong to, start a host (a tab in one kitty window), and once it serves that
+    environment ask the server to reconnect each session to it. The host revives the
+    environment under the same id even after the server has deleted it for being offline.
+  * a host already on that environment: just reconnect the sessions.
+  * a host on another environment that serves nothing: replace it (stop it, release its
+    folder claim) and start over as above. One that serves live sessions is left alone, and
+    the sessions wait.
+The main host in ~/Projects is always kept running, so the app can start new sessions.
 
-Modes:
-  (default)   restore: bring back every session from any source that had real
-              activity, starting a host per folder that needs one, as tabs of
-              one kitty window; then delete stale records and the consumed
-              snapshot so a session closed on purpose later isn't resurrected.
-  --snapshot  record the currently live remote sessions, and remember the ones
-              that just died along with their host. A snapshot left by an earlier
-              boot is a restore's input, so its sessions move to the owed list
-              (below) rather than freezing the snapshot until someone restores.
-  --tick      what the systemd timer runs: snapshot, and — with the server
-              reachable, backing off from 2 minutes to 2 hours between tries,
-              for up to 2 days — start any restore still owed. The login-time
-              restore can be lost before it ever runs (no network yet, or the
-              autostart not firing), a host can give up on a network outage
-              mid-boot, and nothing else would notice.
-  --adopt [id…]
-              hand sessions the cloud has but this machine isn't running to the
-              host already serving their environment — for sessions that never
-              died locally at all, so neither records nor snapshot know them.
-              Unarchiving one in the app is the usual case: it goes back to
-              `active` but stays `disconnected`, because a host only ever gets
-              sessions handed to it and never goes looking. With no ids, takes
-              every disconnected session whose environment a host already
-              serves, and says why it is leaving the others.
-  --dry-run   print the plan only (restore or adopt).
+State, in ~/.local/state/claude-remote-restore/:
+  envs.json      {environment id: folder} for every environment a host here has served.
+                 The server deletes an environment hours after its machine goes offline,
+                 and its folder with it, so this is the one thing we have to remember.
+  attempts.json  backoff for a set of sessions or hosts that will not come back: 2 min
+                 doubling to 5, reset by a new boot or a different set; notifies on the
+                 first failure.
+  restore.log    everything we print, plus whatever a host prints on stderr (why it would
+                 not start, or why it died). A host's tab closes as soon as it exits.
 """
 import fcntl
 import glob
 import json
 import os
 import shlex
+import signal
+import socket
 import subprocess
 import sys
 import time
@@ -73,98 +50,37 @@ import urllib.request
 HOME = os.path.expanduser("~")
 HOST_DIR = f"{HOME}/Projects"
 PERMISSION_MODE = "bypassPermissions"
-SESSIONS = f"{HOME}/.claude/sessions"
 PROJECTS = f"{HOME}/.claude/projects"
 CREDENTIALS = f"{HOME}/.claude/.credentials.json"
 STATE = f"{HOME}/.local/state/claude-remote-restore"
-SNAPSHOT = f"{STATE}/live.json"
-OWED = f"{STATE}/owed.json"
+ENVS = f"{STATE}/envs.json"
 ATTEMPTS = f"{STATE}/attempts.json"
-OWED_TTL_DAYS = 7
-# the timer retries an owed restore with exponential backoff, for this long
+LOG = f"{STATE}/restore.log"
+LOG_MAX = 1 << 20
 RETRY_FIRST_S = 120
-# how long a session that vanished under a still-running host waits for that host to follow
-SUSPECT_S = 15 * 60
-RETRY_MAX_S = 2 * 3600
-RETRY_FOR_S = 2 * 86400
-FIELDS = ("bridgeSessionId", "sessionId", "cwd", "name", "startedAt", "environmentId",
-          "hostPid", "hostStart")
+RETRY_MAX_S = 5 * 60
+HOST_WAIT_S = 120     # for a host we started to come up on its environment
+SETTLE_S = 120        # for reconnected sessions to show as connected
 API = "https://api.anthropic.com"
 BETAS = "oauth-2025-04-20,environments-2025-11-01"
 
 
 def log(*a):
-    print("[claude-remote-restore]", *a, flush=True)
+    line = " ".join(str(x) for x in a)
+    print("[claude-remote-restore]", line, flush=True)
+    try:
+        os.makedirs(STATE, exist_ok=True)
+        if os.path.exists(LOG) and os.path.getsize(LOG) > LOG_MAX:
+            os.replace(LOG, LOG + ".1")
+        with open(LOG, "a") as f:
+            f.write(time.strftime("%F %T ") + line + "\n")
+    except OSError:
+        pass
 
 
 def boot_id():
     with open("/proc/sys/kernel/random/boot_id") as f:
         return f.read().strip()
-
-
-def proc_stat(pid):
-    try:
-        with open(f"/proc/{pid}/stat") as f:
-            return f.read().rsplit(")", 1)[1].split()  # fields 3 onwards
-    except OSError:
-        return None
-
-
-def proc_start(pid):
-    st = proc_stat(pid)
-    return st[19] if st else None  # field 22: starttime
-
-
-def proc_parent(pid):
-    """(ppid, its starttime): the process a session runs under — the host that spawned it,
-    or the shell of its own terminal."""
-    st = proc_stat(pid)
-    if not st:
-        return None, None
-    ppid = int(st[1])  # field 4
-    return ppid, proc_start(ppid)
-
-
-def host_gone(s):
-    """Has the process this session ran under exited? None when the entry predates our
-    recording it."""
-    if not s.get("hostPid"):
-        return None
-    return proc_start(s["hostPid"]) != s.get("hostStart")
-
-
-def project_key(cwd):
-    return cwd.replace("/", "-").replace(".", "-")
-
-
-def pointer_path(cwd):
-    return f"{PROJECTS}/{project_key(cwd)}/bridge-pointer.json"
-
-
-def read_pointer(cwd):
-    try:
-        with open(pointer_path(cwd)) as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return {}
-
-
-def records():
-    out = []
-    for path in glob.glob(f"{SESSIONS}/*.json"):
-        try:
-            with open(path) as f:
-                r = json.load(f)
-        except (OSError, ValueError):
-            continue
-        r["_path"] = path
-        r["_alive"] = proc_start(r.get("pid")) == str(r.get("procStart"))
-        out.append(r)
-    return out
-
-
-def live_remote(recs):
-    return {r["bridgeSessionId"]: r for r in recs if r["_alive"] and r.get("bridgeSessionId")}
 
 
 def read_json(path):
@@ -183,138 +99,35 @@ def write_json(path, data):
     os.replace(tmp, path)
 
 
-def read_snapshot():
-    return read_json(SNAPSHOT)
+# ---------- this machine ----------
+
+def project_key(cwd):
+    return cwd.replace("/", "-").replace(".", "-")
 
 
-def read_owed():
-    """Sessions a restore still has to bring back, as {bridgeSessionId: entry}."""
-    d = read_json(OWED) or {}
-    return {s["bridgeSessionId"]: s for s in d.get("sessions", []) if s.get("bridgeSessionId")}
+def pointer_path(cwd):
+    return f"{PROJECTS}/{project_key(cwd)}/bridge-pointer.json"
 
 
-def owe(sessions):
-    """Remember sessions as still missing. Returns the names of the newly owed ones."""
-    owed, added = read_owed(), []
-    for s in sessions:
-        b = s.get("bridgeSessionId")
-        if not b or b in owed:
-            continue
-        entry = {k: s.get(k) for k in FIELDS}
-        entry["owedSince"] = int(time.time() * 1000)
-        owed[b] = entry
-        added.append(s.get("name") or b)
-    if added:
-        write_json(OWED, {"sessions": list(owed.values())})
-    return added
+def read_pointer(cwd):
+    return read_json(pointer_path(cwd)) or {}
 
 
-def settle_owed(back, now=None):
-    """Forget the sessions in `back`, and the ones we have owed for too long to matter."""
-    owed = read_owed()
-    cutoff = (now if now is not None else time.time() * 1000) - OWED_TTL_DAYS * 86400 * 1000
-    dropped = False
-    for b, s in sorted(owed.items()):
-        if b in back:
-            del owed[b]
-            dropped = True
-        elif (s.get("owedSince") or 0) < cutoff:
-            log(f"giving up on {s.get('name') or b}: missing for over {OWED_TTL_DAYS} days")
-            del owed[b]
-            dropped = True
-    if dropped:
-        write_json(OWED, {"sessions": list(owed.values())})
-
-
-def snapshot():
-    old = read_snapshot()
-    live = live_remote(records())
-    if old and old.get("boot_id") != boot_id():
-        # A snapshot an earlier boot left behind is a restore's input, and it used to be left
-        # untouched until one consumed it — which meant a restore that never ran (no network
-        # at login, say) froze the snapshot for the rest of the boot, and the sessions live
-        # right now went unrecorded. Hand what it names to the owed list, which every restore
-        # reads and no boot resets, and carry on recording.
-        carried = owe([s for s in old.get("sessions", []) + old.get("orphans", [])
-                       if s.get("bridgeSessionId") not in live])
-        if carried:
-            log("owed from an earlier boot:", ", ".join(carried))
-        old = None
-    entries = {}
-    for b, r in live.items():
-        e = {k: r.get(k) for k in FIELDS}
-        # the folder's pointer names the environment the host serves it under; a restore
-        # needs it to revive that same environment rather than register a fresh one
-        e["environmentId"] = read_pointer(r["cwd"]).get("environmentId")
-        e["hostPid"], e["hostStart"] = proc_parent(r.get("pid"))
-        entries[b] = e
-    # A session that vanished together with the process it ran under was taken down with it
-    # (crash, the host giving up on a network outage, its kitty being killed) rather than
-    # closed on purpose. It exits through the normal path and leaves no record, so remember
-    # it here. Judge by that very process, not by "is some host serving the folder": a
-    # replacement host may already be up by the next snapshot, and with the folder test the
-    # whole lot was forgotten as if closed by hand.
-    #
-    # The host does not go first, though: on a network outage it shuts its sessions down
-    # cleanly and lingers (2026-10-09: 17 sessions gone at 14:56, host still up at the 14:56:30
-    # snapshot, all forgotten). So a session that vanishes under a living host counts as an
-    # orphan when the server is unreachable right then, and otherwise stays a suspect for
-    # SUSPECT_S — promoted if its host dies (or the network turns out down) in that time.
-    previous = {s["bridgeSessionId"]: s for s in (old or {}).get("sessions", [])}
-    orphans = {s["bridgeSessionId"]: s for s in (old or {}).get("orphans", [])}
-    suspects = {s["bridgeSessionId"]: s for s in (old or {}).get("suspects", [])}
-    now = time.time()
-    vanished = [s for b, s in previous.items() if b not in live]
-    offline = None  # asked lazily, once
-    for s in vanished + list(suspects.values()):
-        b = s["bridgeSessionId"]
-        if b in orphans:
-            continue
-        gone = host_gone(s)
-        if gone or (gone is None and not host_running(s.get("cwd"))):
-            orphans[b] = s
-            suspects.pop(b, None)
-            continue
-        if offline is None:
-            offline = not server_reachable()
-        if offline:
-            orphans[b] = s
-            suspects.pop(b, None)
-        elif b not in suspects:
-            suspects[b] = dict(s, vanishedAt=now)
-    for b, s in list(suspects.items()):
-        if now - s.get("vanishedAt", now) > SUSPECT_S:
-            del suspects[b]  # its host outlived it: closed on purpose
-    for d in (orphans, suspects):
-        for b in list(d):
-            if b in live:  # it is back
-                del d[b]
-    if offline:
-        names = [s.get("name") or s["bridgeSessionId"] for s in vanished]
-        if names:
-            log("sessions went down with the network:", ", ".join(names))
-    write_json(SNAPSHOT, {"boot_id": boot_id(), "sessions": list(entries.values()),
-                          "orphans": list(orphans.values()),
-                          "suspects": list(suspects.values())})
-    settle_owed(set(live))
-
-
-def has_user_activity(r):
-    path = f"{PROJECTS}/{project_key(r['cwd'])}/{r['sessionId']}.jsonl"
-    try:
-        with open(path, errors="replace") as f:
-            return any('"type":"user"' in l and "tool_result" not in l for l in f)
-    except OSError:
-        return False
+def write_pointer(cwd, env, session):
+    path = pointer_path(cwd)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump({"sessionId": session_id(session), "environmentId": env,
+                   "source": "standalone"}, f)
 
 
 def running_hosts():
-    """{folder: pid} for every `claude remote-control` terminal, bar --session-id reattaches."""
+    """{folder: pid} for every `claude remote-control` host, bar --session-id terminals."""
     hosts = {}
-    for stat in glob.glob("/proc/[0-9]*/cmdline"):
-        pid = stat.split("/")[2]
+    for path in glob.glob("/proc/[0-9]*/cmdline"):
+        pid = path.split("/")[2]
         try:
-            with open(stat, "rb") as f:
+            with open(path, "rb") as f:
                 argv = f.read().split(b"\0")
         except OSError:
             continue
@@ -329,21 +142,95 @@ def running_hosts():
     return hosts
 
 
-def host_running(directory=None):
-    """A `claude remote-control` terminal serving a folder (any folder, or `directory`)."""
-    hosts = running_hosts()
-    return bool(hosts) if directory is None else directory in hosts
+def served_env(cwd):
+    """The environment the host in `cwd` serves, or None if no host runs there."""
+    if cwd not in running_hosts():
+        return None
+    return read_pointer(cwd).get("environmentId")
 
 
-def served_environments():
-    """{environmentId: folder} for the environments a host is serving right now."""
-    served = {}
+def remember_envs():
+    """Record the environment every running host serves; returns the whole map."""
+    envs = read_json(ENVS) or {}
+    changed = False
     for cwd in running_hosts():
         env = read_pointer(cwd).get("environmentId")
-        if env:
-            served[env] = cwd
-    return served
+        if env and envs.get(env) != cwd:
+            envs[env] = cwd
+            changed = True
+    if changed:
+        write_json(ENVS, envs)
+    return envs
 
+
+def stop_host(cwd, pid):
+    """Stop a host, and the `fish -C claude remote-control` shell holding its tab open."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            ppid = int(f.read().rsplit(")", 1)[1].split()[1])
+        with open(f"/proc/{ppid}/cmdline", "rb") as f:
+            parent = f.read()
+    except (OSError, ValueError, IndexError):
+        ppid, parent = None, b""
+    for p in [pid] + ([ppid] if b"remote-control" in parent else []):
+        try:
+            os.kill(p, signal.SIGTERM)
+        except OSError:
+            pass
+    for _ in range(20):
+        if running_hosts().get(cwd) != pid:
+            return True
+        time.sleep(0.5)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    time.sleep(1)
+    return running_hosts().get(cwd) != pid
+
+
+def lock():
+    """One run at a time: two hosts starting in one folder means a 409 for one of them."""
+    os.makedirs(STATE, exist_ok=True)
+    f = open(f"{STATE}/restore.lock", "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    return f
+
+
+def launch_kitty(argv):
+    """Open the hosts' kitty window so that it outlives us.
+
+    From the systemd timer, a plain child lands in the oneshot service's cgroup, and systemd
+    kills that cgroup the moment we exit — taking kitty, the host and every session it just
+    adopted down with it. So there, have Hyprland start it (its own process tree, and the
+    window still goes to workspace 3), or failing that make it a transient unit of its own.
+    From exec-once it stays a plain child (no setsid) so the [workspace N silent] prefix can
+    follow the pid chain from exec-once to the window."""
+    if os.environ.get("INVOCATION_ID"):
+        if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+            r = subprocess.run(["hyprctl", "dispatch", "exec",
+                                "[workspace 3 silent] " + shlex.join(argv)],
+                               capture_output=True, text=True)
+            if r.returncode == 0 and r.stdout.strip() == "ok":
+                return
+            log(f"hyprctl could not start kitty ({(r.stdout + r.stderr).strip()}); using systemd-run")
+        subprocess.run(["systemd-run", "--user", "--collect", "--quiet", "--", *argv],
+                       stdin=subprocess.DEVNULL, check=False)
+        return
+    subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL)
+
+
+def notify(title, body, critical=False):
+    subprocess.run(["notify-send", *(["-u", "critical"] if critical else []),
+                    "-a", "claude-remote-restore", title, body], check=False)
+
+
+# ---------- the server ----------
 
 def api(method, path, body=None):
     """Call the bridge API as ourselves. Returns (status, data) or (None, reason)."""
@@ -366,480 +253,240 @@ def api(method, path, body=None):
         return None, str(e)[:200]
 
 
-def server_reachable():
-    """Can we reach the bridge API at all? Any HTTP answer, even a refusal, counts."""
-    status, reason = api("GET", "/v1/code/sessions?limit=1")
-    if status is None:
-        log(f"cannot reach the server: {reason}")
-        return False
-    return True
+def session_id(cse_id):
+    """cse_X -> session_X, the form bridge-pointer.json uses."""
+    return "session_" + cse_id.split("_", 1)[1]
 
 
-def restore_lock():
-    """One restore at a time: two hosts starting in one folder means a 409 for one of them."""
-    os.makedirs(STATE, exist_ok=True)
-    f = open(f"{STATE}/restore.lock", "w")
-    try:
-        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        f.close()
-        return None
-    return f
+def all_sessions():
+    """Every session the account has, or None if the server cannot be asked."""
+    rows, cursor = [], None
+    for _ in range(50):
+        status, data = api("GET", "/v1/code/sessions?limit=100"
+                           + (f"&cursor={cursor}" if cursor else ""))
+        if status != 200 or not isinstance(data, dict):
+            log(f"cannot list sessions: {status} {data}")
+            return None
+        rows += data.get("data") or []
+        cursor = data.get("next_cursor")
+        if not cursor or not data.get("data"):
+            return rows
+    return rows
 
 
-def launch_kitty(argv):
-    """Open the restore's kitty window so that it outlives us.
-
-    From the systemd timer, a plain child lands in the oneshot service's cgroup, and systemd
-    kills that cgroup the moment we exit — taking kitty, the host and every session it just
-    adopted down with it, ~45 s after "restoring" them. So there, have Hyprland start it
-    (its own process tree, and the window still goes to workspace 3), or failing that make
-    it a transient unit of its own. From exec-once it stays a plain child (no setsid) so the
-    [workspace N silent] prefix can follow the pid chain from exec-once to the window."""
-    if os.environ.get("INVOCATION_ID"):
-        if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
-            r = subprocess.run(["hyprctl", "dispatch", "exec",
-                                "[workspace 3 silent] " + shlex.join(argv)],
-                               capture_output=True, text=True)
-            if r.returncode == 0 and r.stdout.strip() == "ok":
-                return
-            log(f"hyprctl could not start kitty ({(r.stdout + r.stderr).strip()}); using systemd-run")
-        # blocks until the unit has started, so there is no race with our own cgroup's end
-        subprocess.run(["systemd-run", "--user", "--collect", "--quiet", "--", *argv],
-                       stdin=subprocess.DEVNULL, check=False)
-        return
-    subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL)
+def ran_a_turn(row):
+    return bool((row.get("external_metadata") or {}).get("usage"))
 
 
-def cse(bridge_session_id):
-    return "cse_" + bridge_session_id.split("_", 1)[1]
+def title(row):
+    return (row.get("title") or row["id"])[:48]
 
 
-def session_environment(r):
-    """The environment a session belongs to: from the snapshot, else ask the server."""
-    if r.get("environmentId"):
-        return r["environmentId"]
-    status, data = api("GET", f"/v1/code/sessions/{cse(r['bridgeSessionId'])}")
+def env_folder(env, envs):
+    """The folder this machine served `env` from, or None if it is not one of ours."""
+    if env in envs:
+        return envs[env]
+    status, data = api("GET", f"/v1/environments/{env}")
     if status == 200 and isinstance(data, dict):
-        env = (data.get("response_shape") or data).get("environment_id")
-        if env:
-            return env
-    log(f"could not learn the environment of {r.get('name') or r['bridgeSessionId']}: {status} {data}")
+        config = data.get("config") or {}
+        if config.get("machine_name") == socket.gethostname() and config.get("directory"):
+            envs[env] = config["directory"]
+            write_json(ENVS, envs)
+            return envs[env]
     return None
 
 
-def reconnect(env, session, name=None):
-    """Ask the server to hand a session (`cse_…`) to the host now serving that environment."""
-    status, data = api("POST", f"/v1/environments/{env}/bridge/reconnect",
-                       {"session_id": session})
+def reconnect(env, row):
+    status, data = api("POST", f"/v1/environments/{env}/bridge/reconnect", {"session_id": row["id"]})
     if status == 200:
         return True
-    log(f"reconnect {name or session} failed: {status} {data}")
+    log(f"reconnect {title(row)} failed: {status} {data}")
     return False
 
 
-def plan(wanted):
-    """Split the sessions to restore into one host per shared folder, plus solo terminals.
-
-    Sessions sharing a folder cannot each have their own terminal, so one host adopts them
-    all; a session alone in its folder gets the simpler dedicated terminal."""
-    by_dir = {}
-    for b, r in wanted.items():
-        by_dir.setdefault(r["cwd"], []).append((b, r))
-    hosts, solo = {}, []
-    for cwd, group in by_dir.items():
-        if cwd == HOST_DIR or len(group) > 1:
-            hosts[cwd] = group
-        else:
-            solo += group
-    if HOST_DIR not in hosts:
-        hosts.setdefault(HOST_DIR, [])
-    return hosts, solo
+def release(env):
+    """Drop a dead host's claim on its folder, so a new host there is not refused (409)."""
+    status, data = api("DELETE", f"/v1/environments/bridge/{env}")
+    if status not in (200, 404):
+        log(f"could not release {env}: {status} {data}")
 
 
-def wanted_sessions(recs, quiet=False):
-    """Every session this machine still has to bring back, as {bridgeSessionId: entry}.
+# ---------- the run ----------
 
-    Local state only — crashed records, the snapshot, the owed list — so it answers the same
-    with the network down, which is what lets the timer decide whether a restore is owed."""
-    live = live_remote(recs)
-    candidates = [r for r in recs if not r["_alive"] and r.get("bridgeSessionId")]
-    snap = read_snapshot()
-    if snap:
-        candidates += snap.get("orphans", [])
-        if snap.get("boot_id") != boot_id():
-            candidates += snap.get("sessions", [])
-    candidates += list(read_owed().values())
-
-    # newest entry per bridge session, ignoring ones that are already back
-    wanted = {}
-    for r in candidates:
-        b = r["bridgeSessionId"]
-        if b in live:
+def missing(rows, envs):
+    """{folder: {env: [rows]}} — every unarchived, disconnected session of ours worth having."""
+    out = {}
+    for r in rows:
+        env = r.get("environment_id")
+        if (r.get("status") != "active" or r.get("connection_status") == "connected"
+                or not env or not ran_a_turn(r)):
             continue
-        if b not in wanted or (r.get("startedAt") or 0) > (wanted[b].get("startedAt") or 0):
-            wanted[b] = r
-    for b, r in list(wanted.items()):
-        if not has_user_activity(r):
-            if not quiet:
-                log(f"skip {b} ({r.get('name')}): no user activity")
-            del wanted[b]
-    # Claude Code never saves trust for the home directory, so a terminal started there dies
-    # with "Workspace not trusted"; bring those sessions back under the main host instead
-    for b, r in wanted.items():
-        if r.get("cwd") == HOME:
-            wanted[b] = dict(r, cwd=HOST_DIR)
-    return wanted
+        cwd = env_folder(env, envs)
+        if not cwd:
+            continue
+        # Claude Code never saves trust for the home directory, so a host there dies with
+        # "Workspace not trusted"; serve those under the main host's folder instead
+        if cwd == HOME:
+            cwd = HOST_DIR
+        out.setdefault(cwd, {}).setdefault(env, []).append(r)
+    return out
 
 
-def beyond_reach(b):
-    """Why the server will never give this session back, or None if it might."""
-    status, data = api("GET", f"/v1/code/sessions/{cse(b)}")
-    if status != 200 or not isinstance(data, dict):
-        return None  # can't tell; let the restore try
-    row = data.get("response_shape") or data
-    if row.get("status") == "archived":
-        return "archived in the app"
-    if row.get("environment_id") == "":
-        return "the server tied it to no environment, so nothing can reattach it"
-    return None
+def plan(rows, envs):
+    """Decide, per folder, the environment to serve and what to do about its host.
 
-
-def restore(dry):
-    recs = records()
-    wanted = wanted_sessions(recs)
-    snap = read_snapshot()
-    snap_from_previous_boot = bool(snap and snap.get("boot_id") != boot_id())
-
-    # nothing can be registered without the server, not even the host this folder needs, so
-    # keep what we know for the next try rather than half-starting anything
-    if not dry and not server_reachable():
-        if wanted:
-            log("owed until the network is back:",
-                ", ".join(sorted(r.get("name") or b for b, r in wanted.items())))
-            owe(list(wanted.values()))
-        return 2
-
-    # owing these would only raise the "not restored" alert every boot for a week
-    lost = set()
-    for b, r in sorted(wanted.items()):
-        why = beyond_reach(b)
-        if why:
-            log(f"drop {b} ({r.get('name')}): {why}")
-            lost.add(b)
-            del wanted[b]
-    if lost and not dry:
-        settle_owed(lost)
-
-    hosts, solo = plan(wanted)
-
-    # one environment serves a folder, so the host revives the one most of its sessions
-    # belong to; any session on another environment has to wait for a later run
-    adopt, tabs = {}, []
-    for cwd, group in sorted(hosts.items()):
-        envs = {}
-        for b, r in group:
-            env = session_environment(r)
-            if env:
-                envs.setdefault(env, []).append((b, r))
-        env = max(envs, key=lambda e: len(envs[e])) if envs else None
-        for other, left in envs.items():
+    Returns [(cwd, env, sessions, action)], action being "reconnect" (host already serves
+    env), "start" (no host), or ("replace", pid, old_env); and the sessions left waiting."""
+    connected = {r.get("environment_id") for r in rows
+                 if r.get("status") == "active" and r.get("connection_status") == "connected"}
+    hosts = running_hosts()
+    want = missing(rows, envs)
+    want.setdefault(HOST_DIR, {})
+    steps, waiting = [], []
+    for cwd, by_env in sorted(want.items()):
+        current = read_pointer(cwd).get("environmentId") if cwd in hosts else None
+        if current in by_env:
+            env = current
+        elif by_env:
+            env = max(by_env, key=lambda e: len(by_env[e]))
+        else:
+            env = None
+        for other, group in by_env.items():
             if other != env:
-                for b, r in left:
-                    log(f"defer {b} ({r.get('name')}): on {other}, but {cwd} is served by {env}")
-                    del wanted[b]
-        if env:
-            adopt[cwd] = (env, envs[env])
-        elif group:
-            continue
-        if host_running(cwd):
-            log(f"host already running in {cwd}")
+                log(f"waiting: {len(group)} session(s) on {other}, but {cwd} gets {env}:",
+                    ", ".join(title(r) for r in group))
+                waiting += group
+        sessions = by_env.get(env, [])
+        if cwd not in hosts:
+            steps.append((cwd, env, sessions, "start"))
+        elif env is None or current == env:
+            if sessions:
+                steps.append((cwd, env, sessions, "reconnect"))
+        elif current in connected:
+            log(f"waiting: {cwd} is served by {current}, which has live sessions:",
+                ", ".join(title(r) for r in sessions))
+            waiting += sessions
         else:
-            tabs.append(("host" if cwd == HOST_DIR else f"host {os.path.basename(cwd)}", cwd,
-                         f"claude remote-control --permission-mode {PERMISSION_MODE}"))
+            steps.append((cwd, env, sessions, ("replace", hosts[cwd], current)))
+    return steps, waiting
 
-    for b, r in sorted(solo, key=lambda kv: kv[1].get("startedAt") or 0):
-        tabs.append((r.get("name") or b, r["cwd"],
-                     f"claude remote-control --session-id {cse(b)} "
-                     f"--permission-mode {PERMISSION_MODE}"))
 
-    for cwd, (env, group) in sorted(adopt.items()):
-        names = ", ".join(r.get("name") or b for b, r in group)
-        log(f"adopt in {cwd} on {env}: {names}")
-    for title, cwd, cmd in tabs:
-        log(f"launch [{title}] in {cwd}: {cmd}")
-    if dry:
-        return 0
-
-    # the host reuses the environment its folder's pointer names, so aim the pointer at the
-    # sessions' environment before it starts
-    fresh = set()  # folders whose host we start, and which so adopt their pointer's session
-    for cwd, (env, group) in adopt.items():
-        if host_running(cwd):
-            continue
-        fresh.add(cwd)
-        path = pointer_path(cwd)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
-            json.dump({"sessionId": group[0][0], "environmentId": env, "source": "standalone"}, f)
-        log(f"pointed {os.path.basename(path)} for {cwd} at {env}")
-
-    if tabs:
-        session_file = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "claude-remote-restore.kitty")
-        with open(session_file, "w") as f:
-            for title, cwd, cmd in tabs:
-                f.write(f"new_tab {title}\ncd {cwd}\nlaunch fish -C '{cmd}'\n")
-        launch_kitty(["kitty", "--title", "claude remote-control", "--session", session_file])
-
-    # a host we start adopts the session its pointer names by itself; the rest (and all of
-    # them, for a host that was already up) have to be handed to it once it serves the
-    # environment
-    handed = set()
-    for cwd, (env, group) in adopt.items():
-        for _ in range(12):  # up to 2 minutes for the host to come up
-            if host_running(cwd) and read_pointer(cwd).get("environmentId") == env:
-                break
-            time.sleep(10)
-        else:
-            log(f"warning: no host on {env} in {cwd}; leaving its sessions for a later run")
-            continue
-        if cwd in fresh:
-            handed.add(group[0][0])
-        for b, r in (group[1:] if cwd in fresh else group):
-            if reconnect(env, cse(b), r.get("name") or b):
-                handed.add(b)
-
-    # once a session has written its own live record, drop the crashed one
-    pending = set(wanted)
-    for _ in range(18 if tabs or handed else 0):  # up to 3 minutes
-        time.sleep(10)
-        now_live = live_remote(records())
-        for b in list(pending):
-            if b in now_live:
-                pending.discard(b)
-                for old in [r for r in recs if r.get("bridgeSessionId") == b and not r["_alive"]]:
-                    try:
-                        os.remove(old["_path"])
-                        log(f"removed stale record {os.path.basename(old['_path'])}")
-                    except OSError:
-                        pass
-        if not pending and host_running(HOST_DIR):
-            break
-    if not host_running(HOST_DIR):
-        log("warning: main host is not running")
-        subprocess.run(["notify-send", "-u", "critical", "-a", "claude-remote-restore",
-                        "Claude Remote Control: main host failed to start",
-                        f"Check the 'host' tab, then run claude-remote-restore."], check=False)
-    settle_owed({b for b in wanted if b not in pending})
-    if pending:
-        # the owed list keeps them across boots, so this stays true whether or not anyone
-        # reruns us, and the snapshot is free to go on recording what is live
-        names = [wanted[b].get("name") or b for b in pending]
-        log("warning: did not come back:", ", ".join(names))
-        owe([wanted[b] for b in pending])
-        subprocess.run(["notify-send", "-u", "critical", "-a", "claude-remote-restore",
-                        "Claude Remote Control: sessions not restored",
-                        "\n".join(names) + "\n\nThe timer keeps retrying for 2 days; "
-                        "or run claude-remote-restore now."], check=False)
-    if snap_from_previous_boot:
-        # consumed: what it named is either back or owed, and the timer owns the file again
+def backoff(ids, failed):
+    """Should this run go ahead, given earlier failures to bring back the same sessions?
+    With `failed` set, record a failure instead and say whether it is the first."""
+    a = read_json(ATTEMPTS) or {}
+    if a.get("boot_id") != boot_id() or a.get("ids") != ids:
+        a = {"boot_id": boot_id(), "ids": ids, "tries": 0, "next": 0}
+    if failed is None:
+        return time.time() >= a["next"]
+    if not failed:
         try:
-            os.remove(SNAPSHOT)
+            os.remove(ATTEMPTS)
         except OSError:
             pass
-    if (tabs or handed) and not pending:
-        subprocess.run(["notify-send", "-a", "claude-remote-restore", "Claude Remote Control restored",
-                        "\n".join([t[0] for t in tabs] + sorted(
-                            wanted[b].get("name") or b for b in handed if b in wanted))], check=False)
-    return 1 if pending or not host_running(HOST_DIR) else 0
+        return False
+    a["tries"] += 1
+    a["next"] = time.time() + min(RETRY_FIRST_S * 2 ** (a["tries"] - 1), RETRY_MAX_S)
+    write_json(ATTEMPTS, a)
+    return a["tries"] == 1
 
 
-def tick():
-    """The timer's round: snapshot, and start the restore this boot still owes.
+def restore(dry=False):
+    envs = remember_envs()
+    rows = all_sessions()
+    if rows is None:
+        return 2  # nothing can be registered without the server; the timer tries again
+    steps, waiting = plan(rows, envs)
+    owed = sorted(r["id"] for _, _, sessions, _ in steps for r in sessions)
+    # a host that will not start backs off like a session, or every run opens another window
+    starts = sorted(f"host:{cwd}" for cwd, _, _, action in steps if action != "reconnect")
+    if not dry and (owed or starts) and not backoff(owed + starts, None):
+        return 0
+    for cwd, env, sessions, action in steps:
+        what = action if isinstance(action, str) else f"replace host {action[1]} on {action[2]}"
+        log(f"{what} in {cwd} on {env}: {len(sessions)} session(s)",
+            ", ".join(title(r) for r in sessions))
+    if dry or not steps:
+        return 0
 
-    A restore is triggered once, at login, and can be lost before it ever runs — the network
-    may not be up yet (a machine can be back an hour before its internet is), or the autostart
-    itself may not fire, or a host gives up on a long network outage mid-boot — and nothing
-    else would ever notice. So check here too, where we already run every couple of minutes.
-    Tries back off exponentially (2 min doubling to 2 h) and stop after 2 days, so a session
-    that cannot come back doesn't restart a host every two minutes forever; ticks without
-    network don't count as tries. A fresh boot, or a quiet spell longer than the longest
-    backoff, starts the schedule over."""
-    now = time.time()
-    attempts = read_json(ATTEMPTS) or {}
-    owes = wanted_sessions(records(), quiet=True)
-    if attempts.get("boot_id") != boot_id() or (
-            not owes and now - attempts.get("last", 0) > RETRY_MAX_S):
-        attempts = {"boot_id": boot_id(), "tries": 0}
-    if owes:
-        attempts.setdefault("since", now)
-        names = ", ".join(sorted(r.get("name") or b for b, r in owes.items()))
-        if now - attempts["since"] > RETRY_FOR_S:
-            if not attempts.get("gaveUp"):
-                attempts["gaveUp"] = True
-                log(f"giving up: still owed after {RETRY_FOR_S // 3600} h of retrying:", names)
-                subprocess.run(["notify-send", "-u", "critical", "-a", "claude-remote-restore",
-                                "Claude Remote Control: gave up retrying",
-                                names + "\n\nRun claude-remote-restore by hand."], check=False)
-        elif now < attempts.get("next", 0):
-            pass
-        elif not server_reachable():
-            log(f"{len(owes)} session(s) to restore, but no network yet; trying again shortly")
-        else:
-            lock = restore_lock()
-            if lock is None:
-                log("a restore is already running; leaving it to that one")
-            else:
-                attempts["tries"] += 1
-                attempts["last"] = now
-                attempts["next"] = now + min(RETRY_FIRST_S * 2 ** (attempts["tries"] - 1),
-                                             RETRY_MAX_S)
-                write_json(ATTEMPTS, attempts)
-                log(f"restore owed (try {attempts['tries']}, next no sooner than "
-                    f"{time.strftime('%a %H:%M', time.localtime(attempts['next']))}):", names)
-                restore(dry=False)
-                lock.close()
+    tabs, fresh = [], {}
+    for cwd, env, sessions, action in steps:
+        if isinstance(action, tuple):
+            _, pid, old = action
+            if not stop_host(cwd, pid):
+                log(f"could not stop the host in {cwd}; its sessions wait")
+                continue
+            release(old)
+            action = "start"
+        if action == "start":
+            if env and sessions:
+                write_pointer(cwd, env, sessions[0]["id"])
+            fresh[cwd] = env
+            name = "host" if cwd == HOST_DIR else f"host {os.path.basename(cwd)}"
+            # the host's errors go to our log, and the tab closes with it: a host that would
+            # not start, or died, leaves no dead window behind for the next run to pile onto
+            tabs.append((name, cwd, f"claude remote-control --permission-mode {PERMISSION_MODE}"
+                                    f" 2>>{shlex.quote(LOG)}; exit"))
+    if tabs:
+        runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+        session_file = os.path.join(runtime, "claude-remote-restore.kitty")
+        with open(session_file, "w") as f:
+            for name, cwd, cmd in tabs:
+                f.write(f"new_tab {name}\ncd {cwd}\nlaunch fish -C '{cmd}'\n")
+        launch_kitty(["kitty", "--title", "claude remote-control", "--session", session_file])
+
+    handed = []
+    for cwd, env, sessions, _ in steps:
+        if cwd in fresh:
+            deadline = time.time() + HOST_WAIT_S
+            while time.time() < deadline and served_env(cwd) is None:
+                time.sleep(5)
+            got = served_env(cwd)
+            if got is None:
+                log(f"warning: the host in {cwd} did not come up")
+                continue
+            if env and got != env:
+                log(f"warning: the host in {cwd} came up on {got}, not {env}; "
+                    "the server would not revive it, so its sessions cannot reattach here")
+                continue
+            remember_envs()
+            sessions = sessions[1:]  # a fresh host takes the session its pointer names itself
+        for r in sessions:
+            if reconnect(env, r):
+                handed.append(r)
+
+    # judge by the server, which is the only one that knows whether a session is back
+    deadline = time.time() + (SETTLE_S if owed else 0)
+    pending = set(owed)
+    while pending and time.time() < deadline:
+        time.sleep(10)
+        now = all_sessions() or []
+        pending -= {r["id"] for r in now if r.get("connection_status") == "connected"}
+    names = {r["id"]: title(r) for r in rows}
+    back = [names[i] for i in owed if i not in pending]
+    if back:
+        log("back:", ", ".join(back))
+    hosts = running_hosts()
+    dead = [s[5:] for s in starts if s[5:] not in hosts]
+    lost = [names[i] for i in sorted(pending)] + [f"host in {d}" for d in dead]
+    if lost:
+        log("warning: did not come back:", ", ".join(lost))
+        if backoff(owed + starts, True):
+            notify("Claude Remote Control: not restored",
+                   "\n".join(lost) + "\n\nRetrying in the background; see " + LOG, critical=True)
     else:
-        attempts.pop("since", None)  # the 2-day window is per outage, the backoff outlives it
-        attempts.pop("gaveUp", None)
-    write_json(ATTEMPTS, attempts)
-    snapshot()
-
-
-
-def sessions_index():
-    """Every session the account knows about, as {cse_id: row}, or None if we cannot ask."""
-    status, data = api("GET", "/v1/code/sessions?limit=100")
-    if status != 200 or not isinstance(data, dict):
-        log(f"could not list sessions: {status} {data}")
-        return None
-    return {r["id"]: r for r in data.get("data", []) if r.get("id")}
-
-
-def title_of(row):
-    return (row.get("title") or "").replace("\n", " ")[:48] or row["id"]
-
-
-def adoptable(row, served, guess=False):
-    """(environment, folder) to hand this session to, or (None, reason not to).
-
-    `guess` allows a session that records no environment to be offered to a host anyway —
-    only the server can say whether that is allowed, so it is never done unasked."""
-    if row.get("connection_status") == "connected":
-        return None, "already live"
-    if row.get("status") != "active":
-        return None, f"{row.get('status')} — unarchive it in the app first"
-    env = row.get("environment_id") or None
-    if env:
-        cwd = served.get(env)
-        if cwd:
-            return (env, cwd), None
-        return None, f"belongs to {env}, which no host is serving — start one for its folder first"
-    if not guess:
-        return None, "no environment of its own — name its id to offer it to a host anyway"
-    cwd = HOST_DIR if HOST_DIR in served.values() else None
-    if cwd is None and len(served) == 1:
-        cwd = next(iter(served.values()))
-    if cwd is None:
-        return None, "no environment recorded, and no host to offer it to"
-    return (read_pointer(cwd).get("environmentId"), cwd), None
-
-
-def adopt(ids, dry=False):
-    """Hand sessions the cloud has but this machine isn't running to the host serving them.
-
-    A session that was never running here when it went away leaves nothing behind for the
-    restore path to find — no live record, and nothing the snapshot saw die. Unarchiving one
-    is the everyday case: the app puts it back to `active`, but a host only ever gets sessions
-    handed to it, so it stays `disconnected` until someone asks. That ask is this."""
-    served = served_environments()
-    index = sessions_index()
-    if index is None:
-        return 1
-    targets, failed = [], []
-    if ids:
-        for raw in ids:
-            i = "cse_" + raw.split("_", 1)[-1]
-            row = index.get(i)
-            if row is None:  # older than the listing, or archived out of it
-                status, row = api("GET", f"/v1/code/sessions/{i}")
-                if status != 200 or not isinstance(row, dict):
-                    log(f"{i}: cannot read this session: {status} {row}")
-                    failed.append(i)
-                    continue
-                row.setdefault("id", i)
-            targets.append(row)
-    else:
-        loose = [r for r in index.values() if r.get("status") == "active"
-                 and r.get("connection_status") != "connected"]
-        for row in loose:
-            where, why = adoptable(row, served)  # never guessing: only what a host already serves
-            if where:
-                targets.append(row)
-            else:
-                log(f"leave {row['id']} ({title_of(row)}): {why}")
-        if not targets:
-            log(f"nothing to adopt ({len(loose)} disconnected, none of them ours to take)")
-
-    handed = {}
-    for row in targets:
-        where, why = adoptable(row, served, guess=bool(ids))
-        if not where:
-            log(f"{row['id']} ({title_of(row)}): {why}")
-            if why != "already live":
-                failed.append(row["id"])
-            continue
-        env, cwd = where
-        log(f"{'would adopt' if dry else 'adopt'} {row['id']} ({title_of(row)}) "
-            f"into {cwd} on {env}" + (" [no environment of its own]"
-                                      if not row.get("environment_id") else ""))
-        if dry:
-            continue
-        if reconnect(env, row["id"], title_of(row)):
-            handed[row["id"]] = row
-        else:
-            failed.append(row["id"])
-    if dry or not handed:
-        return 1 if failed else 0
-
-    # the host spawns each adopted session as a child, which writes its own live record; that
-    # record is also what puts the session back in the snapshot, so a later reboot sees it
-    pending = {"session_" + i.split("_", 1)[1]: i for i in handed}
-    for attempt in range(10):  # up to 90s
-        if attempt:
-            time.sleep(10)
-        live = live_remote(records())
-        for b in [b for b in pending if b in live]:
-            log(f"{pending[b]} ({title_of(handed[pending[b]])}) is live as {live[b].get('name')}")
-            del pending[b]
-        if not pending:
-            break
-    for b, i in pending.items():
-        log(f"warning: the server took {i} ({title_of(handed[i])}) but it has not started here yet")
-        failed.append(i)
-    busy = [title_of(r) for r in handed.values() if r.get("status_bucket") == "working"]
-    if busy:
-        log("mid-turn when adopted, so it may pick up where it left off:", ", ".join(busy))
-    subprocess.run(["notify-send", "-a", "claude-remote-restore", "Claude Remote Control adopted",
-                    "\n".join(sorted(title_of(r) for r in handed.values()))], check=False)
-    return 1 if failed else 0
+        backoff(owed + starts, False)
+        if back:
+            notify("Claude Remote Control restored", "\n".join(back))
+    return 1 if lost else 0
 
 
 if __name__ == "__main__":
-    args = sys.argv[1:]
-    dry = "--dry-run" in args
-    if "--snapshot" in args:
-        snapshot()
-    elif "--tick" in args:
-        tick()
-    elif "--adopt" in args:
-        sys.exit(adopt([a for a in args[args.index("--adopt") + 1:] if not a.startswith("-")], dry))
-    elif dry:
-        sys.exit(restore(True) or 0)
-    else:
-        held = restore_lock()
-        if held is None:
-            log("a restore is already running; leaving it to that one")
-            sys.exit(3)
-        sys.exit(restore(False) or 0)
+    dry = "--dry-run" in sys.argv[1:]
+    unknown = [a for a in sys.argv[1:] if a != "--dry-run"]
+    if unknown:
+        sys.exit(__doc__.split("\n\n")[0] + "\n\nusage: claude-remote-restore [--dry-run]")
+    held = None if dry else lock()
+    if not dry and held is None:
+        sys.exit(0)  # another run is on it
+    sys.exit(restore(dry) or 0)
