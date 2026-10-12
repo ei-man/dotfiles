@@ -23,6 +23,10 @@ otherwise; there is no moving one). So per folder:
     folder claim) and start over as above. One that serves live sessions is left alone, and
     the sessions wait.
 The main host in ~/Projects is always kept running, so the app can start new sessions.
+If the server will not even list the sessions (most likely an access token that expired
+while the machine was off: only a running Claude Code refreshes it), that host is started
+anyway on the environment its pointer already names; it refreshes the token, and the next
+run reconnects the rest.
 
 State, in ~/.local/state/claude-remote-restore/:
   envs.json      {environment id: folder} for every environment a host here has served.
@@ -391,11 +395,35 @@ def backoff(ids, failed):
     return a["tries"] == 1
 
 
+def start_hosts(folders):
+    """Start a host in each folder, as tabs of one kitty window."""
+    if not folders:
+        return
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+    session_file = os.path.join(runtime, "claude-remote-restore.kitty")
+    with open(session_file, "w") as f:
+        for cwd in folders:
+            name = "host" if cwd == HOST_DIR else f"host {os.path.basename(cwd)}"
+            # the host's errors go to our log, and the tab closes with it: a host that would
+            # not start, or died, leaves no dead window behind for the next run to pile onto
+            cmd = (f"claude remote-control --permission-mode {PERMISSION_MODE}"
+                   f" 2>>{shlex.quote(LOG)}; exit")
+            f.write(f"new_tab {name}\ncd {cwd}\nlaunch fish -C '{cmd}'\n")
+    launch_kitty(["kitty", "--title", "claude remote-control", "--session", session_file])
+
+
 def restore(dry=False):
     envs = remember_envs()
     rows = all_sessions()
     if rows is None:
-        return 2  # nothing can be registered without the server; the timer tries again
+        # nothing can be planned without the server, but the main host can still start: it
+        # refreshes an expired token, and the timer's next run does the rest
+        key = [f"host:{HOST_DIR}"]
+        if not dry and HOST_DIR not in running_hosts() and backoff(key, None):
+            log(f"start in {HOST_DIR} without the server, on its pointer's environment")
+            start_hosts([HOST_DIR])
+            backoff(key, True)
+        return 2
     steps, waiting = plan(rows, envs)
     owed = sorted(r["id"] for _, _, sessions, _ in steps for r in sessions)
     # a host that will not start backs off like a session, or every run opens another window
@@ -409,7 +437,7 @@ def restore(dry=False):
     if dry or not steps:
         return 0
 
-    tabs, fresh = [], {}
+    fresh = {}
     for cwd, env, sessions, action in steps:
         if isinstance(action, tuple):
             _, pid, old = action
@@ -422,18 +450,7 @@ def restore(dry=False):
             if env and sessions:
                 write_pointer(cwd, env, sessions[0]["id"])
             fresh[cwd] = env
-            name = "host" if cwd == HOST_DIR else f"host {os.path.basename(cwd)}"
-            # the host's errors go to our log, and the tab closes with it: a host that would
-            # not start, or died, leaves no dead window behind for the next run to pile onto
-            tabs.append((name, cwd, f"claude remote-control --permission-mode {PERMISSION_MODE}"
-                                    f" 2>>{shlex.quote(LOG)}; exit"))
-    if tabs:
-        runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
-        session_file = os.path.join(runtime, "claude-remote-restore.kitty")
-        with open(session_file, "w") as f:
-            for name, cwd, cmd in tabs:
-                f.write(f"new_tab {name}\ncd {cwd}\nlaunch fish -C '{cmd}'\n")
-        launch_kitty(["kitty", "--title", "claude remote-control", "--session", session_file])
+    start_hosts(list(fresh))
 
     handed = []
     for cwd, env, sessions, _ in steps:
