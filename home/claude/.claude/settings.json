@@ -4,8 +4,7 @@
       "Read(/)",
       "WebFetch(*)",
       "WebSearch",
-      "Bash(go*)",
-      "Bash(docker*)"
+      "Bash(*)"
     ]
   },
   "model": "opus",
@@ -21,5 +20,6 @@
   "skipDangerousModePermissionPrompt": true,
   "theme": "dark",
   "editorMode": "vim",
-  "remoteControlAtStartup": true
+  "remoteControlAtStartup": true,
+  "agentPushNotifEnabled": true
 }
