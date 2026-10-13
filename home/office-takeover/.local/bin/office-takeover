@@ -2,30 +2,27 @@
 """Office speakers: "last one wins" between this PC and AirPlay senders.
 
 - The PC's default output is switched TO "Office" (low-latency RTP sink to the NUC):
-  stop whatever AirPlay sender is playing on the NUC's shairport-sync. Music Assistant
-  is stopped through its API; any other sender by restarting the receiver container.
+  stop whatever AirPlay sender is playing on the NUC's shairport-sync. First the AirPlay
+  remote-control Stop (asks the sender to stop); if it is still playing, restart the receiver.
 - shairport-sync starts playing (its hook appends "play_begins" to events.log on the NUC):
   if the PC is on "Office", switch the PC back to the output it used before.
 """
-import json
 import pathlib
 import subprocess
 import threading
 import time
-import urllib.request
 
 OFFICE = "office"
 FALLBACK = "alsa_output.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.iec958-stereo"
 STATE = pathlib.Path.home() / ".local/state/office-takeover/previous-sink"
-MA_ENV = pathlib.Path.home() / ".config/music-assistant/token.env"
-MA_PLAYERS = ("upf4fae190", "apb6fcb9e13e13")  # Office: universal + AirPlay player
 EVENTS = "~/Projects/smart-home/shairport-sync/events/events.log"
 SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=10",
        "-o", "ServerAliveCountMax=3", "nuc"]
-PLAYER_STATE = ("docker exec shairport-sync dbus-send --system --print-reply "
-                "--dest=org.gnome.ShairportSync /org/gnome/ShairportSync "
-                "org.freedesktop.DBus.Properties.Get "
+DBUS = ("docker exec shairport-sync dbus-send --system --print-reply "
+        "--dest=org.gnome.ShairportSync /org/gnome/ShairportSync ")
+PLAYER_STATE = (DBUS + "org.freedesktop.DBus.Properties.Get "
                 "string:org.gnome.ShairportSync.RemoteControl string:PlayerState")
+REMOTE_STOP = DBUS + "org.gnome.ShairportSync.RemoteControl.Stop"
 
 
 def log(msg):
@@ -45,26 +42,20 @@ def sinks():
 
 
 def save_previous(sink):
+    if sink not in sinks():  # e.g. "@DEFAULT_SINK@" while pipewire-pulse is still starting
+        return
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(sink)
 
 
 def previous_sink():
+    """The output used before Office; else the headset; else any other real output."""
+    available = sinks()
     sink = STATE.read_text().strip() if STATE.exists() else ""
-    return sink if sink in sinks() else FALLBACK
-
-
-def ma_call(command, **args):
-    env = {}
-    for line in MA_ENV.read_text().splitlines():
-        if "=" in line and not line.lstrip().startswith("#"):
-            key, value = line.split("=", 1)
-            env[key.removeprefix("export ").strip()] = value.strip().strip("'\"")
-    req = urllib.request.Request(
-        env["MA_URL"] + "/api",
-        data=json.dumps({"command": command, "args": args, "message_id": 1}).encode(),
-        headers={"Content-Type": "application/json", "Authorization": "Bearer " + env["MA_TOKEN"]})
-    return json.load(urllib.request.urlopen(req, timeout=10))
+    for candidate in (sink, FALLBACK, *available):
+        if candidate in available and candidate != OFFICE:
+            return candidate
+    return None
 
 
 def receiver_playing():
@@ -77,17 +68,15 @@ def claim_office():
     try:
         if not receiver_playing():
             return
-        for player_id in MA_PLAYERS:
-            try:
-                ma_call("players/cmd/stop", player_id=player_id)
-            except Exception as e:
-                log(f"Music Assistant stop {player_id} failed: {e}")
+        out = subprocess.run(SSH + [REMOTE_STOP], capture_output=True, text=True, timeout=20)
+        if out.returncode:
+            log(f"remote-control Stop failed: {out.stderr.strip()}")
         time.sleep(2)
         if receiver_playing():
-            log("receiver still playing (not Music Assistant): restarting shairport-sync")
+            log("sender still playing after remote-control Stop: restarting shairport-sync")
             subprocess.run(SSH + ["docker restart shairport-sync"], capture_output=True, timeout=60)
         else:
-            log("stopped Music Assistant on Office")
+            log("sender stopped by remote-control Stop")
     except Exception as e:
         log(f"claim failed: {e}")
 
@@ -95,8 +84,13 @@ def claim_office():
 def release_office():
     """Another sender started on Office: move the PC back to its previous output."""
     target = previous_sink()
+    if not target:
+        log("AirPlay started on Office, but the PC has no other output to switch to")
+        return
     log(f"AirPlay started on Office: switching PC to {target}")
     pactl("set-default-sink", target)
+    if default_sink() != target:
+        log(f"switching PC to {target} failed; it is still on {default_sink()}")
     # Streams pinned to Office (moved there by hand) don't follow the default; move them too.
     office = next((l.split("\t")[0] for l in pactl("list", "sinks", "short").splitlines()
                    if l.split("\t")[1:2] == [OFFICE]), None)
