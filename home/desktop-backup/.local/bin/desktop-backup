@@ -14,7 +14,7 @@ import argparse, glob, os, pathlib, shutil, sqlite3, subprocess, sys
 
 STAGE = "/var/tmp/desktop-backup"
 TARGET = "nuc:Projects/desktop-backups/"
-ROUTER = "root@192.168.2.1"
+ROUTER = "router"  # ssh alias in ~/.ssh/config
 HOME = "/home/eimas"
 STACK = "/mnt/shared_data/home-system"
 
