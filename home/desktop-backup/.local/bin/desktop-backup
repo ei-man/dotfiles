@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Snapshot everything on the desktop that cannot be re-downloaded, and push it to the NUC.
+
+The NUC's nightly backup-home-system.sh tars ~/Projects/desktop-backups and uploads it to Google Drive
+(30 days kept), so this is the desktop's off-disk and off-site copy. Media, games and code that lives on
+GitHub are left out on purpose: they come back by re-downloading. Restore steps are in DESKTOP-RESTORE.md
+in the home-system repo, which is part of the snapshot too.
+
+Run daily by desktop-backup.timer, ahead of the NUC's 21:00 job. --dry-run builds the snapshot and prints
+its size without pushing. The local copy runs as root (some app configs are container-root owned); the
+push runs as the user, whose ssh key reaches the NUC.
+"""
+import argparse, glob, os, pathlib, shutil, sqlite3, subprocess, sys
+
+STAGE = "/var/tmp/desktop-backup"
+TARGET = "nuc:Projects/desktop-backups/"
+HOME = "/home/eimas"
+STACK = "/mnt/shared_data/home-system"
+
+# Copied with rsync -R, so each lands in the snapshot under its full path ("/./" marks where that starts).
+# Globs are expanded; entries that do not exist are skipped.
+PATHS = [
+    "/mnt/shared_data/./home-system",   # media stack: configs, secrets, app databases (filtered below)
+    HOME + "/./Projects/financer/data",
+    HOME + "/./Projects/financer/.env",
+    HOME + "/./Projects/financer/*.pdf",   # tax documents, kept out of git
+    HOME + "/./.ssh",
+    HOME + "/./.android/debug.keystore",  # lets a rebuilt machine update the installed debug app
+    HOME + "/./.config/omada",
+    HOME + "/./.config/music-assistant",
+    HOME + "/./.config/rclone",
+    HOME + "/./.config/gh",
+    HOME + "/./.config/pipewire",       # rtp-office sink, not in dotfiles
+    HOME + "/./.local/state/claude-remote-restore/envs.json",
+    HOME + "/./Documents",
+    "/./etc",                           # all of it (minus /etc/xdg), so nothing customised is missed
+    "/./boot/limine.conf",
+]
+
+# Regenerable or re-downloadable parts of the media stack. SQLite files are excluded here and copied
+# separately through the backup API, because a live database copied file by file can be torn.
+FILTERS = [
+    "- /etc/xdg/",                       # 300 MB of package-shipped defaults
+    "- /home-system/data/",                          # media + torrents: re-downloaded from the *arr databases
+    "+ /home-system/.git/",
+    "+ /home-system/.git/redact-cache/***",          # the real values behind the REDACTED placeholders in git
+    "- /home-system/.git/***",
+    "- /home-system/config/jellyfin/data/metadata/",
+    "- /home-system/config/jellyfin/data/data/trickplay/",
+    "- /home-system/config/jellyfin/cache/",
+    "- /home-system/config/aiostreams/anime-database/",
+    "- Backups/", "- MediaCover/", "- logs/", "- log/", "- *.log", "- *.log.*",
+    "- *.db", "- *.db-*", "- *.sqlite", "- *.sqlite-*", "- *.sqlite3",
+]
+SKIP_DBS = {"logs.db"}
+
+
+def run(*cmd, **kw):
+    return subprocess.run(cmd, check=True, **kw)
+
+
+def stage(dest):
+    """Root half: build the snapshot in dest."""
+    # Built from empty every run: a few seconds, and nothing stale survives a change to PATHS.
+    dest = pathlib.Path(dest)
+    shutil.rmtree(dest, ignore_errors=True)
+    dest.mkdir(parents=True)
+    filters = [a for f in FILTERS for a in ("--filter", f)]
+    run("rsync", "-aR", *filters,
+        *[m for p in PATHS for m in sorted(glob.glob(p))], str(dest) + "/")
+
+    # Live SQLite databases, consistently, at the same paths they would have had.
+    for root in (STACK + "/config", HOME + "/Projects/financer/data"):
+        for src in pathlib.Path(root).rglob("*"):
+            if src.suffix not in (".db", ".sqlite", ".sqlite3") or src.name in SKIP_DBS:
+                continue
+            if any(part in ("Backups", "trickplay", "metadata", "cache") for part in src.parts):
+                continue
+            out = dest / src.relative_to(os.path.dirname(STACK) if str(src).startswith(STACK) else HOME)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            with sqlite3.connect(f"file:{src}?mode=ro", uri=True) as s, sqlite3.connect(out) as d:
+                s.backup(d)
+
+    # MediaManager keeps its state in Postgres inside a Docker volume.
+    with open(dest / "mediamanager.sql", "wb") as f:
+        run("docker", "exec", "mediamanager_postgres", "pg_dump", "-U", "MediaManager", "MediaManager", stdout=f)
+
+    # What to reinstall and re-enable on a fresh system.
+    pk = dest / "packages"
+    pk.mkdir(exist_ok=True)
+    for name, cmd in {
+        "pacman-native.txt": ["pacman", "-Qqen"],
+        "pacman-aur.txt": ["pacman", "-Qqem"],
+        "systemd-system-enabled.txt": ["systemctl", "list-unit-files", "--state=enabled", "--no-legend"],
+        "systemd-user-enabled.txt": ["sudo", "-u", "eimas", "XDG_RUNTIME_DIR=/run/user/1000",
+                                     "systemctl", "--user", "list-unit-files", "--state=enabled", "--no-legend"],
+    }.items():
+        (pk / name).write_bytes(subprocess.run(cmd, check=True, capture_output=True).stdout)
+
+    uid = int(os.environ.get("SUDO_UID", 1000))
+    run("chown", "-R", f"{uid}:{uid}", str(dest))
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--stage", help=argparse.SUPPRESS)
+    args = ap.parse_args()
+    if args.stage:
+        return stage(args.stage)
+
+    run("sudo", "-n", sys.executable, os.path.abspath(__file__), "--stage", STAGE)
+    size = subprocess.run(["du", "-sh", STAGE], capture_output=True, text=True).stdout.split()[0]
+    if args.dry_run:
+        print(f"snapshot built in {STAGE}: {size}, not pushed")
+        return
+    run("rsync", "-a", "--delete", STAGE + "/", TARGET)
+    print(f"pushed {size} to {TARGET}")
+
+
+if __name__ == "__main__":
+    main()
