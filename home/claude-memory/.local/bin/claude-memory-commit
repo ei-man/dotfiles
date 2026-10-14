@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Commit and push the Claude Code memory notes, one commit per changed note.
+
+The memory folder (~/.claude/projects/-home-eimas-Projects/memory) is the git repo behind the private
+ei-man/claude-memory. Every added, updated or removed note becomes its own commit named after the note,
+the MEMORY.md index goes last, and the result is pushed. A file that looks like it holds a credential
+is left uncommitted and the run exits non-zero, so it shows up in `systemctl --user --failed`.
+Run weekly by claude-memory-commit.timer. --no-push commits without pushing; --dir picks another repo.
+"""
+import argparse, os, re, subprocess, sys
+
+DEFAULT_DIR = "~/.claude/projects/-home-eimas-Projects/memory"
+INDEX = "MEMORY.md"
+SECRET = re.compile(
+    r"ghp_[A-Za-z0-9]{20}|github_pat_|sk-[A-Za-z0-9_-]{20}|-----BEGIN [A-Z ]*PRIVATE KEY"
+    r"|[Bb]earer [A-Za-z0-9._~+/-]{24,}"
+    r"|(?i:password|passwd|api[_-]?key|secret|token)[\"']?\s*[:=]\s*[\"']?[A-Za-z0-9/+_.~-]{16,}"
+)
+
+
+def git(*args, check=True):
+    return subprocess.run(["git", *args], cwd=repo, check=check, text=True, capture_output=True)
+
+
+def changed_paths():
+    out = git("status", "--porcelain=v1", "-z", "--untracked-files=all").stdout
+    return [entry[3:] for entry in out.split("\0") if entry]
+
+
+def description(path):
+    with open(os.path.join(repo, path), encoding="utf-8") as f:
+        for line in f:
+            if line.startswith("description:"):
+                return line.split(":", 1)[1].strip().strip('"')
+    return ""
+
+
+def message(path):
+    name = path[:-3] if path.endswith(".md") else path
+    if path == INDEX:
+        return ["Update index"]
+    if not os.path.exists(os.path.join(repo, path)):
+        return [f"Remove {name}"]
+    tracked = git("cat-file", "-e", f"HEAD:{path}", check=False).returncode == 0
+    body = description(path) if path.endswith(".md") else ""
+    return [f"{'Update' if tracked else 'Add'} {name}"] + ([body] if body else [])
+
+
+def main():
+    global repo
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--dir", default=DEFAULT_DIR)
+    ap.add_argument("--no-push", action="store_true")
+    args = ap.parse_args()
+    repo = os.path.expanduser(args.dir)
+
+    # The index last, so its commit lands after the notes it points at.
+    paths = sorted(changed_paths(), key=lambda p: (p == INDEX, p))
+    skipped, made = [], 0
+    for path in paths:
+        full = os.path.join(repo, path)
+        if os.path.exists(full):
+            with open(full, encoding="utf-8", errors="replace") as f:
+                if SECRET.search(f.read()):
+                    skipped.append(path)
+                    continue
+        msg = message(path)
+        git("add", "-A", "--", path)
+        git("commit", "-q", *[a for m in msg for a in ("-m", m)], "--", path)
+        print(msg[0])
+        made += 1
+
+    if made and not args.no_push:
+        git("push", "-q")
+        print(f"pushed {made} commit(s)")
+    elif not made:
+        print("nothing to commit")
+    if skipped:
+        print("left uncommitted, looks like a credential: " + ", ".join(skipped), file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

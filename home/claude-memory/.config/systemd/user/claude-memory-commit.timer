@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly commit of the Claude Code memory notes
+
+[Timer]
+OnCalendar=weekly
+# catch up after the desktop was off at the turn of the week
+Persistent=true
+RandomizedDelaySec=2h
+
+[Install]
+WantedBy=timers.target
