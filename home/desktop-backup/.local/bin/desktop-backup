@@ -14,6 +14,7 @@ import argparse, glob, os, pathlib, shutil, sqlite3, subprocess, sys
 
 STAGE = "/var/tmp/desktop-backup"
 TARGET = "nuc:Projects/desktop-backups/"
+ROUTER = "root@192.168.2.1"
 HOME = "/home/eimas"
 STACK = "/mnt/shared_data/home-system"
 
@@ -110,12 +111,35 @@ def main():
         return stage(args.stage)
 
     run("sudo", "-n", sys.executable, os.path.abspath(__file__), "--stage", STAGE)
+    router_ok = backup_router(pathlib.Path(STAGE) / "router")
     size = subprocess.run(["du", "-sh", STAGE], capture_output=True, text=True).stdout.split()[0]
     if args.dry_run:
         print(f"snapshot built in {STAGE}: {size}, not pushed")
-        return
-    run("rsync", "-a", "--delete", STAGE + "/", TARGET)
-    print(f"pushed {size} to {TARGET}")
+    else:
+        run("rsync", "-a", "--delete", STAGE + "/", TARGET)
+        print(f"pushed {size} to {TARGET}")
+    if not router_ok:
+        sys.exit(1)
+
+
+def backup_router(dest):
+    """The OpenWrt router's own config backup and package list, pulled with the user's ssh key.
+
+    Kept out of the root half because root has no key for the router. A failure is reported but does
+    not stop the rest of the snapshot from being pushed.
+    """
+    dest.mkdir()
+    try:
+        for name, cmd in {"sysupgrade-backup.tar.gz": "sysupgrade -b -",
+                          "apk-world.txt": "cat /etc/apk/world",
+                          "board.json": "ubus call system board"}.items():
+            out = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", ROUTER, cmd],
+                                 check=True, capture_output=True).stdout
+            (dest / name).write_bytes(out)
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"router backup failed: {e.stderr.decode().strip() or e}", file=sys.stderr)
+        return False
 
 
 if __name__ == "__main__":
