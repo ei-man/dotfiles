@@ -10,7 +10,7 @@ Be fast. Run `git status --short; git diff HEAD` as one call, then stage and
 commit as one call (`git add <paths> && git commit -m ...`). Push only if asked.
 The diff is enough — don't browse `git log` or re-read changed files.
 
-Follow any commit conventions in the repo's CLAUDE.md — grouping, message length,
+Follow any commit conventions in the repo's AGENTS.md or CLAUDE.md — grouping, message length,
 style. They override the defaults here.
 
 Stage explicit paths: `git add .` and `-A` abort with exit 128 inside the sandbox.
