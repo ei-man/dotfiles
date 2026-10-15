@@ -38,10 +38,12 @@ PATHS = [
     "/./boot/limine.conf",
 ]
 
-# Regenerable or re-downloadable parts of the media stack. SQLite files are excluded here and copied
-# separately through the backup API, because a live database copied file by file can be torn.
+# Anything an app or the OS regenerates by itself is left out; a restore works the same without it.
+# SQLite files are excluded here and copied separately, because a live database copied file by file
+# can be torn.
 FILTERS = [
     "- /etc/xdg/",                       # 300 MB of package-shipped defaults
+    "- /etc/pacman.d/gnupg/",            # pacman keyring, rebuilt by pacman-key --populate
     "- /home-system/data/",                          # media + torrents: re-downloaded from the *arr databases
     "+ /home-system/.git/",
     "+ /home-system/.git/redact-cache/***",          # the real values behind the REDACTED placeholders in git
@@ -49,11 +51,24 @@ FILTERS = [
     "- /home-system/config/jellyfin/data/metadata/",
     "- /home-system/config/jellyfin/data/data/trickplay/",
     "- /home-system/config/jellyfin/cache/",
-    "- /home-system/config/aiostreams/anime-database/",
+    "- /home-system/config/jellyfin/data/data/splashscreen.png",
+    "- /home-system/config/jellyfin/.nv/",           # NVIDIA shader cache
+    "- /home-system/config/aiostreams/anime-database/",  # aiostreams downloads these datasets again
+    "- /home-system/config/aiostreams/id-mappings/",
+    "- /home-system/config/aiostreams/scene-mappings/",
+    "- /home-system/config/aiostreams/seadex/",
+    "- /home-system/config/maintainerr/ui/",         # Maintainerr copies its web UI here on every start
+    "- /home-system/config/qbittorrent/qBittorrent/GeoDB/",
+    "- backup-latest.zip",                           # tracked in git
     "- Backups/", "- MediaCover/", "- logs/", "- log/", "- *.log", "- *.log.*",
     "- *.db", "- *.db-*", "- *.sqlite", "- *.sqlite-*", "- *.sqlite3",
 ]
-SKIP_DBS = {"logs.db"}
+SKIP_DBS = {"logs.db", "introskipper-cache.db"}  # logs; intro skipper's fingerprint cache
+
+# Rows the app rebuilds by itself, dropped from the copy: aiostreams recomputes its anime tables from the
+# downloaded datasets on every start.
+TRIM = {"db.sqlite": ["DELETE FROM anime_synonyms", "DELETE FROM anime_records", "DELETE FROM anime_ids",
+                     "DELETE FROM anime_build"]}  # the build marker too, or a restore skips the rebuild
 
 
 def run(*cmd, **kw):
@@ -79,8 +94,15 @@ def stage(dest):
                 continue
             out = dest / src.relative_to(os.path.dirname(STACK) if str(src).startswith(STACK) else HOME)
             out.parent.mkdir(parents=True, exist_ok=True)
-            with sqlite3.connect(f"file:{src}?mode=ro", uri=True) as s, sqlite3.connect(out) as d:
-                s.backup(d)
+            # VACUUM INTO is a consistent snapshot that also leaves out the database's free pages.
+            with sqlite3.connect(f"file:{src}?mode=ro", uri=True) as s:
+                s.execute("VACUUM INTO ?", (str(out),))
+            if src.name in TRIM and "aiostreams" in src.parts:
+                with sqlite3.connect(out) as d:
+                    for sql in TRIM[src.name]:
+                        d.execute(sql)
+                d.execute("VACUUM")
+                d.close()
 
     # MediaManager keeps its state in Postgres inside a Docker volume.
     with open(dest / "mediamanager.sql", "wb") as f:
