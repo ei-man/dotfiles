@@ -341,8 +341,10 @@ def plan(rows, envs):
 
     Returns [(cwd, env, sessions, action)], action being "reconnect" (host already serves
     env), "start" (no host), or ("replace", pid, old_env); and the sessions left waiting."""
+    # the empty session a fresh host opens is not worth keeping a wrong environment for
     connected = {r.get("environment_id") for r in rows
-                 if r.get("status") == "active" and r.get("connection_status") == "connected"}
+                 if r.get("status") == "active" and r.get("connection_status") == "connected"
+                 and ran_a_turn(r)}
     hosts = running_hosts()
     want = missing(rows, envs)
     want.setdefault(HOST_DIR, {})
