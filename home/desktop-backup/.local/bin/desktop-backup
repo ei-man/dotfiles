@@ -1,27 +1,28 @@
 #!/usr/bin/env python3
-"""Snapshot everything on the desktop that cannot be re-downloaded, and push it to the NUC.
+"""Snapshot everything on the desktop that cannot be re-downloaded, and back it up with restic.
 
-The NUC's nightly backup-home-system.sh tars ~/Projects/desktop-backups and uploads it to Google Drive
-(30 days kept), so this is the desktop's off-disk and off-site copy. Media, games and code that lives on
-GitHub are left out on purpose: they come back by re-downloading. Restore steps are in DESKTOP-RESTORE.md
-in the home-system repo, which is part of the snapshot too.
+The snapshot goes to the restic repository the NUC uses too (on Google Drive, settings in the homelab
+repo's backup.env; 30 daily snapshots kept), so this is the desktop's off-disk and off-site copy. Media,
+games and code that lives on GitHub are left out on purpose: they come back by re-downloading. Restore
+steps are in desktop/DESKTOP-RESTORE.md in the homelab repo, which is part of the snapshot too.
 
-Run daily by desktop-backup.timer, ahead of the NUC's 21:00 job. --dry-run builds the snapshot and prints
-its size without pushing. The local copy runs as root (some app configs are container-root owned); the
-push runs as the user, whose ssh key reaches the NUC.
+Run daily by desktop-backup.timer. --dry-run builds the snapshot and prints its size without uploading.
+The local copy runs as root (some app configs are container-root owned); the upload runs as the user.
 """
 import argparse, glob, os, pathlib, shutil, sqlite3, subprocess, sys
 
 STAGE = "/var/tmp/desktop-backup"
-TARGET = "nuc:Projects/desktop-backups/"
 ROUTER = "router"  # ssh alias in ~/.ssh/config
 HOME = "/home/eimas"
-STACK = "/mnt/shared_data/home-system"
+SHARED = "/mnt/shared_data"
+HOMELAB = SHARED + "/homelab"
+STACK = HOMELAB + "/desktop"
 
 # Copied with rsync -R, so each lands in the snapshot under its full path ("/./" marks where that starts).
 # Globs are expanded; entries that do not exist are skipped.
 PATHS = [
-    "/mnt/shared_data/./home-system",   # media stack: configs, secrets, app databases (filtered below)
+    SHARED + "/./homelab/desktop",      # media stack: configs, secrets, app databases (filtered below)
+    SHARED + "/./homelab/.git/redact-cache",   # the real values behind the REDACTED placeholders in git
     HOME + "/./Projects/financer/data",
     HOME + "/./Projects/financer/.env",
     HOME + "/./Projects/financer/*.pdf",   # tax documents, kept out of git
@@ -44,21 +45,18 @@ PATHS = [
 FILTERS = [
     "- /etc/xdg/",                       # 300 MB of package-shipped defaults
     "- /etc/pacman.d/gnupg/",            # pacman keyring, rebuilt by pacman-key --populate
-    "- /home-system/data/",                          # media + torrents: re-downloaded from the *arr databases
-    "+ /home-system/.git/",
-    "+ /home-system/.git/redact-cache/***",          # the real values behind the REDACTED placeholders in git
-    "- /home-system/.git/***",
-    "- /home-system/config/jellyfin/data/metadata/",
-    "- /home-system/config/jellyfin/data/data/trickplay/",
-    "- /home-system/config/jellyfin/cache/",
-    "- /home-system/config/jellyfin/data/data/splashscreen.png",
-    "- /home-system/config/jellyfin/.nv/",           # NVIDIA shader cache
-    "- /home-system/config/aiostreams/anime-database/",  # aiostreams downloads these datasets again
-    "- /home-system/config/aiostreams/id-mappings/",
-    "- /home-system/config/aiostreams/scene-mappings/",
-    "- /home-system/config/aiostreams/seadex/",
-    "- /home-system/config/maintainerr/ui/",         # Maintainerr copies its web UI here on every start
-    "- /home-system/config/qbittorrent/qBittorrent/GeoDB/",
+    "- /homelab/desktop/data/",                      # media + torrents: re-downloaded from the *arr databases
+    "- /homelab/desktop/config/jellyfin/data/metadata/",
+    "- /homelab/desktop/config/jellyfin/data/data/trickplay/",
+    "- /homelab/desktop/config/jellyfin/cache/",
+    "- /homelab/desktop/config/jellyfin/data/data/splashscreen.png",
+    "- /homelab/desktop/config/jellyfin/.nv/",           # NVIDIA shader cache
+    "- /homelab/desktop/config/aiostreams/anime-database/",  # aiostreams downloads these datasets again
+    "- /homelab/desktop/config/aiostreams/id-mappings/",
+    "- /homelab/desktop/config/aiostreams/scene-mappings/",
+    "- /homelab/desktop/config/aiostreams/seadex/",
+    "- /homelab/desktop/config/maintainerr/ui/",         # Maintainerr copies its web UI here on every start
+    "- /homelab/desktop/config/qbittorrent/qBittorrent/GeoDB/",
     "- backup-latest.zip",                           # tracked in git
     "- Backups/", "- MediaCover/", "- logs/", "- log/", "- *.log", "- *.log.*",
     "- *.db", "- *.db-*", "- *.sqlite", "- *.sqlite-*", "- *.sqlite3",
@@ -92,7 +90,7 @@ def stage(dest):
                 continue
             if any(part in ("Backups", "trickplay", "metadata", "cache") for part in src.parts):
                 continue
-            out = dest / src.relative_to(os.path.dirname(STACK) if str(src).startswith(STACK) else HOME)
+            out = dest / src.relative_to(SHARED if str(src).startswith(STACK) else HOME)
             out.parent.mkdir(parents=True, exist_ok=True)
             # VACUUM INTO is a consistent snapshot that also leaves out the database's free pages.
             with sqlite3.connect(f"file:{src}?mode=ro", uri=True) as s:
@@ -138,8 +136,14 @@ def main():
     if args.dry_run:
         print(f"snapshot built in {STAGE}: {size}, not pushed")
     else:
-        run("rsync", "-a", "--delete", STAGE + "/", TARGET)
-        print(f"pushed {size} to {TARGET}")
+        env = dict(os.environ, RESTIC_PASSWORD_FILE=HOMELAB + "/restic-password")
+        for line in open(HOMELAB + "/backup.env"):
+            if "=" in line and not line.startswith("#"):
+                key, value = line.strip().split("=", 1)
+                env[key] = value
+        run("restic", "backup", "--host", "desktop", "--retry-lock", "30m", STAGE, env=env)
+        run("restic", "forget", "--host", "desktop", "--group-by", "host", "--keep-daily", "30", "--prune", "--retry-lock", "30m", env=env)
+        print(f"backed up {size}")
     if not router_ok:
         sys.exit(1)
 
@@ -148,7 +152,7 @@ def backup_router(dest):
     """The OpenWrt router's own config backup and package list, pulled with the user's ssh key.
 
     Kept out of the root half because root has no key for the router. A failure is reported but does
-    not stop the rest of the snapshot from being pushed.
+    not stop the rest of the snapshot from being backed up.
     """
     dest.mkdir()
     try:

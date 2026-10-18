@@ -13,5 +13,5 @@ trust_level = "trusted"
 [projects."/home/eimas/Projects/TypeScriptAddonTemplate-Fork"]
 trust_level = "trusted"
 
-[projects."/mnt/shared_data/home-system"]
+[projects."/mnt/shared_data/homelab/desktop"]
 trust_level = "trusted"

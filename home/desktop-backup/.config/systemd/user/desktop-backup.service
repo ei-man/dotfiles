@@ -1,5 +1,5 @@
 [Unit]
-Description=Snapshot the desktop's irreplaceable data and push it to the NUC
+Description=Snapshot the desktop's irreplaceable data and back it up with restic
 After=network-online.target
 Wants=network-online.target
 

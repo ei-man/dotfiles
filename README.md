@@ -24,6 +24,7 @@ dotfiles/
 This will:
 1. Stow all packages in `home/` to `$HOME`
 2. Stow all packages in `root/` to `/` (requires sudo)
+3. Enable and start any stowed systemd unit that isn't enabled yet
 
 ## Manual Usage
 

@@ -1,0 +1,125 @@
+# Noctalia v5 config, rebuilt by hand from the v4 settings.json next to it
+# (v5 does not migrate v4 settings). Settings-GUI changes land in
+# ~/.local/state/noctalia/settings.toml and override this file.
+# Check with: noctalia config validate
+
+[shell]
+time_format       = "{:%H:%M}"
+# v4 tinted every app icon except the focused window's. v5 can only tint all or
+# none, so icons stay in color and unfocused windows are dimmed instead
+# ([widget.taskbar] inactive_opacity).
+app_icon_colorize = false
+
+[theme]
+mode    = "dark"
+source  = "builtin"
+builtin = "Tokyo-Night"
+
+[location]
+auto_locate = false
+address     = "Horsens, Denmark"
+
+[weather]
+enabled = true
+unit    = "celsius"
+
+[control_center.calendar]
+show_week_numbers = true
+
+[audio]
+enable_overdrive = true
+
+# ── Wallpaper: random pick from ~/Pictures/Wallpapers every 30 min ───────────
+
+[wallpaper]
+enabled         = true
+directory       = "~/Pictures/Wallpapers"
+fill_mode       = "crop"
+transition      = ["fade", "disc", "stripes", "wipe", "honeycomb"]
+edge_smoothness = 0.05
+
+[wallpaper.automation]
+enabled          = true
+interval_seconds = 1800
+order            = "random"
+
+# ── Notifications / OSD ──────────────────────────────────────────────────────
+
+[notification]
+layer = "overlay"
+
+[osd]
+position      = "top_center"
+hide_delay_ms = 2000
+
+# ── Bar: full-width top bar (v4 "simple" bar type) ───────────────────────────
+
+[bar.default]
+position           = "top"
+background_opacity = 0.93
+radius             = 0
+margin_ends        = 0
+margin_edge        = 0
+thickness          = 47      # v4 "spacious" density: 47 px bar, capsules at 65 %
+capsule_thickness  = 0.65
+widget_spacing     = 18
+scale              = 1.2     # v5 text/icons measured ~20 % smaller than v4 at the same bar height
+
+start  = ["taskbar"]
+center = ["clock"]
+end    = ["tray", "volume", "phone", "notifications", "network", "cpu", "recorder", "keybinds", "control-center"]
+
+# Right-click on empty bar space opens the control center (v4 rightClickAction)
+[bar.default.dead_zone.actions]
+right = "panel-toggle control-center"
+
+# v4 Workspace with showApplications: one capsule per workspace holding its
+# app icons, workspace number in the corner. v5's workspaces widget can't draw
+# app icons; the taskbar grouped by workspace does.
+[widget.taskbar]
+group_by_workspace        = true
+show_workspace_label      = true
+workspace_label_placement = "corner"
+hide_empty_workspaces     = false
+workspace_group_content   = "icons"
+icon_scale                = 1.0
+inactive_opacity          = 0.6
+occupied_color            = "#c0caf5"   # Tokyo Night on_surface = v4 "none". Hex, because a role fill makes v5 draw the number in the same role (invisible)
+empty_color               = "#c0caf5"
+
+[widget.clock]
+format         = "{:%H:%M %a, %b %d}"
+tooltip_format = "{:%A, %B %d, %Y}"
+
+[widget.volume]
+show_label = true
+
+[widget.volume.actions]
+middle = "exec pavucontrol"
+
+[widget.network]
+show_label = false
+
+[widget.cpu]
+type = "sysmon"
+stat = "cpu_usage"
+
+[widget.control-center]
+custom_image = "/usr/share/icons/hicolor/scalable/apps/cachyos-pi.png"
+
+# ── Plugins ──────────────────────────────────────────────────────────────────
+
+[plugins]
+enabled = ["noctalia/screen_recorder", "icefish/phone-connect", "kenn/keybind-cheatsheet"]
+
+[widget.phone]
+type = "icefish/phone-connect:bar"
+
+[widget.recorder]
+type = "noctalia/screen_recorder:recorder"
+
+[widget.keybinds]
+type = "kenn/keybind-cheatsheet:keybinds"
+
+[plugin_settings."icefish/phone-connect"]
+battery_display = "hidden"   # phone icon only, like v4's kde-connect widget

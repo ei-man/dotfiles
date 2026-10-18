@@ -1,0 +1,7 @@
+[Unit]
+Description=Apply the week's homelab updates to the desktop's media stack
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/mnt/shared_data/homelab/update.sh

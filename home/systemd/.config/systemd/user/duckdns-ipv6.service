@@ -3,4 +3,4 @@ Description=Update DuckDNS AAAA record for jellyfin
 
 [Service]
 Type=oneshot
-ExecStart=/mnt/shared_data/home-system/update-duckdns.sh
+ExecStart=/mnt/shared_data/homelab/desktop/update-duckdns.sh
