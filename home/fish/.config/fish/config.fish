@@ -30,9 +30,9 @@ end
 function monitor
     switch $argv[1]
         case on
-            hyprctl keyword monitor "desc:GIGA-BYTE TECHNOLOGY CO. LTD. M32UC 22190B001233, 3840x2160@144, auto-right, 1.5, vrr, 2"
+            hyprctl eval 'hl.monitor({ output = "desc:GIGA-BYTE TECHNOLOGY CO. LTD. M32UC 22190B001233", mode = "3840x2160@144", position = "auto-right", scale = 1.5, vrr = 2 })'
         case off
-            hyprctl keyword monitor "desc:GIGA-BYTE TECHNOLOGY CO. LTD. M32UC 22190B001233, disable"
+            hyprctl eval 'hl.monitor({ output = "desc:GIGA-BYTE TECHNOLOGY CO. LTD. M32UC 22190B001233", disabled = true })'
         case '*'
             echo "Usage: monitor on|off"
     end

@@ -43,6 +43,14 @@ enabled          = true
 interval_seconds = 1800
 order            = "random"
 
+# ── Lock screen: hyprlock locks (boot, SUPER+L, hypridle) ────────────────────
+# With v5's lock screen on too, both answer logind's lock signal. Whichever
+# loses the race is refused by Hyprland, and v5 exits on that refusal
+# (bar gone after the 1 h idle lock, 2026-10-19).
+
+[lockscreen]
+enabled = false
+
 # ── Notifications / OSD ──────────────────────────────────────────────────────
 
 [notification]
