@@ -292,9 +292,22 @@ hl.bind(mainMod .. " + W", function()
     end
 end, { description = "Stack workspace windows as tabs / unstack" })
 
+-- Up/down (K/J) flip through a stack's windows, wrapping at the ends; outside a
+-- stack they move focus like left/right. Hyprland's movefocus_cycles_groupfirst
+-- only does this for left/right.
+local function focusOrCycle(direction)
+    return function()
+        local window = hl.get_active_window()
+        if (direction == "up" or direction == "down") and window and window.group and window.group.size > 1 then
+            hl.dispatch(direction == "down" and hl.dsp.group.next() or hl.dsp.group.prev())
+        else
+            hl.dispatch(hl.dsp.focus({ direction = direction }))
+        end
+    end
+end
 for _, d in ipairs({ { "left", "H" }, { "right", "L" }, { "up", "K" }, { "down", "J" } }) do
-    hl.bind(mainMod .. " + " .. d[1], hl.dsp.focus({ direction = d[1] }))
-    hl.bind(mainMod .. " + " .. d[2], hl.dsp.focus({ direction = d[1] }))
+    hl.bind(mainMod .. " + " .. d[1], focusOrCycle(d[1]))
+    hl.bind(mainMod .. " + " .. d[2], focusOrCycle(d[1]))
 end
 
 for i = 1, 10 do
