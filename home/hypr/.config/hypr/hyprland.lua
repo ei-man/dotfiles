@@ -292,14 +292,40 @@ hl.bind(mainMod .. " + W", function()
     end
 end, { description = "Stack workspace windows as tabs / unstack" })
 
--- Up/down (K/J) flip through a stack's windows, wrapping at the ends; outside a
--- stack they move focus like left/right. Hyprland's movefocus_cycles_groupfirst
--- only does this for left/right.
+-- Cycle the workspace's tiling layout: dwindle (general.layout) -> monocle ->
+-- scrolling. Each workspace gets one rule per layout on first use and only the
+-- chosen one is enabled; none enabled means the default. Hyprland re-lays out
+-- open windows on the spot. A config reload drops the rules (back to dwindle).
+local nextLayout = { dwindle = "monocle", monocle = "scrolling", scrolling = "dwindle" }
+local workspaceLayoutRules = {}
+hl.bind(mainMod .. " + M", function()
+    local ws = hl.get_active_workspace()
+    if not ws then return end
+    local target = nextLayout[ws.tiled_layout] or "dwindle"
+    local rules = workspaceLayoutRules[ws.id] or {}
+    workspaceLayoutRules[ws.id] = rules
+    for layout, rule in pairs(rules) do
+        rule:set_enabled(layout == target)
+    end
+    if target ~= "dwindle" and not rules[target] then
+        rules[target] = hl.workspace_rule({ workspace = tostring(ws.id), layout = target })
+    end
+end, { description = "Cycle layout: tiles / monocle / scrolling" })
+
+-- Up/down (K/J) flip through a stack's windows, or a monocle workspace's,
+-- wrapping at the ends; elsewhere they move focus like left/right. Hyprland's
+-- movefocus_cycles_groupfirst only does this for left/right.
 local function focusOrCycle(direction)
     return function()
         local window = hl.get_active_window()
-        if (direction == "up" or direction == "down") and window and window.group and window.group.size > 1 then
-            hl.dispatch(direction == "down" and hl.dsp.group.next() or hl.dsp.group.prev())
+        local workspace = hl.get_active_workspace()
+        local forward = direction == "down"
+        if direction ~= "up" and direction ~= "down" then
+            hl.dispatch(hl.dsp.focus({ direction = direction }))
+        elseif window and window.group and window.group.size > 1 then
+            hl.dispatch(forward and hl.dsp.group.next() or hl.dsp.group.prev())
+        elseif workspace and workspace.tiled_layout == "monocle" then
+            hl.dispatch(hl.dsp.layout(forward and "cyclenext" or "cycleprev"))
         else
             hl.dispatch(hl.dsp.focus({ direction = direction }))
         end
