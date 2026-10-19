@@ -30,4 +30,6 @@ New configs, user scripts and systemd user units go in a package here and get st
 - Check edits with `Hyprland --verify-config -c ~/.config/hypr/hyprland.lua`. It catches bad types and values but not unknown field names, and a toggle `action` it doesn't know (only `enable`/`on`, `disable`/`off`, `toggle`) silently toggles.
 - Scripts: `hyprctl keyword` is gone, use `hyprctl eval '<lua>'`. `hyprctl dispatch` takes Lua (`hyprctl dispatch 'hl.dsp.dpms({ action = "off" })'`). Used in hypridle.conf, browser-router and fish's `monitor`.
 - Hyprland picks Lua vs `.conf` once at startup. Deleting `hyprland.conf` under a running `.conf` session makes it write a stub and reload into default binds.
+- Autostart placement (`hl.exec_cmd(cmd, { workspace = "N silent" })`) is used up by the program's first window and expires after 1 minute (Hyprland source: `WindowRuleApplicator.cpp`, `Rule.cpp`). Vesktop's splash window used to take it, so the splash is off in Vesktop's settings (`enableSplashScreen`, local `~/.config/vesktop/settings.json`, not stowed because Vesktop rewrites it).
+- SUPER+W stacks every tiled window on the workspace into one tab group (SUPER+TAB cycles); pressed again it splits them back.
 - hyprlang2lua (third-party converter) got ~92% right but left 3 config errors and mapped `setfloating` to a value that toggles, so the Lua was written by hand.

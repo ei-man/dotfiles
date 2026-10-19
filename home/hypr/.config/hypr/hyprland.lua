@@ -272,6 +272,25 @@ hl.bind(mainMod .. " + CTRL + K", hl.dsp.window.move({ into_group = "u" }), { de
 hl.bind(mainMod .. " + CTRL + J", hl.dsp.window.move({ into_group = "d" }), { description = "Move window into group down" })
 hl.bind(mainMod .. " + TAB", hl.dsp.group.next(), { description = "Next window in group" })
 hl.bind(mainMod .. " + SHIFT + TAB", hl.dsp.group.prev(), { description = "Prev window in group" })
+-- Stack: every tiled window on the workspace goes into one tab group with the
+-- focused one. Pressed on a grouped window it splits the group back into tiles.
+hl.bind(mainMod .. " + W", function()
+    local active = hl.get_active_window()
+    if not active or active.floating then return end
+    if active.group then
+        hl.dispatch(hl.dsp.group.toggle())
+        return
+    end
+    hl.dispatch(hl.dsp.group.toggle())
+    local current = hl.get_active_window()
+    local group = current and current.group
+    if not group then return end
+    for _, window in ipairs(hl.get_workspace_windows(active.workspace.id)) do
+        if not window.floating and window.address ~= active.address then
+            group:add(window)
+        end
+    end
+end, { description = "Stack workspace windows as tabs / unstack" })
 
 for _, d in ipairs({ { "left", "H" }, { "right", "L" }, { "up", "K" }, { "down", "J" } }) do
     hl.bind(mainMod .. " + " .. d[1], hl.dsp.focus({ direction = d[1] }))
