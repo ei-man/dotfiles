@@ -29,6 +29,7 @@ PATHS = [
     HOME + "/./.ssh",
     HOME + "/./.android/debug.keystore",  # lets a rebuilt machine update the installed debug app
     HOME + "/./.config/omada",
+    HOME + "/./.config/airtone",        # AirTone release signing key
     HOME + "/./.config/music-assistant",
     HOME + "/./.config/rclone",
     HOME + "/./.config/gh",
