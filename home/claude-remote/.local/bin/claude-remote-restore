@@ -7,6 +7,11 @@ outage, or a host that shed its sessions and carried on. Archiving a session in 
 is how it is closed on purpose, and that is the only thing that stops it coming back.
 Sessions that never ran a turn (the empty one a fresh host opens) are left alone.
 
+Every live session here also runs in bypassPermissions. A session keeps the mode the app's
+picker had when it was created, whatever the host was started with, so one sitting in auto
+or default is switched the way the picker does it. plan and acceptEdits are left alone:
+those are picked on purpose.
+
 Run with no arguments at login (Hyprland exec-once) and every 2 minutes from a systemd
 timer; one run at a time. `--dry-run` prints the plan and changes nothing.
 
@@ -48,12 +53,14 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 import urllib.error
 import urllib.request
 
 HOME = os.path.expanduser("~")
 HOST_DIR = f"{HOME}/Projects"
 PERMISSION_MODE = "bypassPermissions"
+SWITCH_FROM = ("auto", "default")  # modes a session gets from the app's picker by default
 PROJECTS = f"{HOME}/.claude/projects"
 CREDENTIALS = f"{HOME}/.claude/.credentials.json"
 STATE = f"{HOME}/.local/state/claude-remote-restore"
@@ -308,6 +315,17 @@ def reconnect(env, row):
     return False
 
 
+def set_mode(row):
+    """Switch a live session's permission mode, as the app's mode picker does."""
+    event = {"type": "control_request", "request_id": f"set-mode-{uuid.uuid4()}",
+             "request": {"subtype": "set_permission_mode", "mode": PERMISSION_MODE},
+             "uuid": str(uuid.uuid4())}
+    status, data = api("POST", f"/v1/code/sessions/{row['id']}/events",
+                       {"events": [{"payload": event}]})
+    if status != 200:
+        log(f"set mode on {title(row)} failed: {status} {data}")
+
+
 def release(env):
     """Drop a dead host's claim on its folder, so a new host there is not refused (409)."""
     status, data = api("DELETE", f"/v1/environments/bridge/{env}")
@@ -316,6 +334,17 @@ def release(env):
 
 
 # ---------- the run ----------
+
+def switch_modes(rows, envs, dry):
+    """Put every live session served from here that sits in auto or default into PERMISSION_MODE."""
+    for r in rows:
+        mode = (r.get("external_metadata") or {}).get("permission_mode")
+        if (r.get("status") == "active" and r.get("connection_status") == "connected"
+                and r.get("environment_id") in envs and mode in SWITCH_FROM):
+            log(f"{mode} -> {PERMISSION_MODE}: {title(r)}")
+            if not dry:
+                set_mode(r)
+
 
 def missing(rows, envs):
     """{folder: {env: [rows]}} — every unarchived, disconnected session of ours worth having."""
@@ -426,6 +455,7 @@ def restore(dry=False):
             start_hosts([HOST_DIR])
             backoff(key, True)
         return 2
+    switch_modes(rows, envs, dry)
     steps, waiting = plan(rows, envs)
     owed = sorted(r["id"] for _, _, sessions, _ in steps for r in sessions)
     # a host that will not start backs off like a session, or every run opens another window
