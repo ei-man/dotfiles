@@ -8,3 +8,6 @@ home/easyeffects/.config/easyeffects/db/*.lock
 # Claude-managed skill copies (re-synced from claude.ai) and its trash
 home/claude/.claude/skills/synced/
 home/claude/.claude/skills/.trash/
+
+# Python bytecode
+__pycache__/
