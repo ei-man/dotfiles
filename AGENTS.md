@@ -34,3 +34,11 @@ New configs, user scripts and systemd user units go in a package here and get st
 - SUPER+W stacks every tiled window on the workspace into one tab group (SUPER+TAB or SUPER+J/K cycle it); pressed again it splits them back. J/K/up/down cycle a stack because `binds:movefocus_cycles_groupfirst` only covers left/right.
 - SUPER+M cycles the workspace layout dwindle → monocle → scrolling via per-workspace `hl.workspace_rule` handles toggled with `set_enabled` (Hyprland re-lays out open windows on the spot; a reload resets to dwindle). In monocle, SUPER+J/K send `cyclenext`/`cycleprev`.
 - hyprlang2lua (third-party converter) got ~92% right but left 3 config errors and mapped `setfloating` to a value that toggles, so the Lua was written by hand.
+
+## Chrome
+
+- The profile lives in `~/.config/google-chrome-main`; `~/.config/google-chrome` is a symlink to it. `home/chrome-cdp/.config/chrome-flags.conf` (read by `/usr/bin/google-chrome-stable`) adds `--user-data-dir=…-main --remote-debugging-port=9222`, so tools (Claude's `chrome-live` MCP) connect to 127.0.0.1:9222 with no Allow dialog.
+- Why: Chrome 136+ ignores `--remote-debugging-port` on the default data dir, which left only the `chrome://inspect` consent route (an Allow click per connection). Tested 2026-10-27: passing the default path explicitly is ignored, and so is a symlink *to* the default dir (Chrome resolves it). Moving the real dir and launching from the new path works.
+- The symlink means a launch that skips the wrapper (`/opt/google/chrome/chrome`) still opens the same profile, just without the port.
+- This replaced `chrome-cdp-proxy` (Aug–Oct 2026), a daemon that held one approved connection and re-served it on :9223. Its reconnect loop raised a fresh Allow dialog about once a minute whenever nobody clicked.
+- Trade-off: any local process running as the user can drive the logged-in browser. Little is lost on this host: no keyring daemon runs, so Chrome's cookie store is already readable by any such process.
