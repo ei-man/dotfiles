@@ -1,0 +1,194 @@
+#!/usr/bin/env node
+// Read the web through the user's real Chrome (CDP on 127.0.0.1:9222) and print compact text.
+// Each call opens a hidden tab (not in the tab strip), so logins apply and nothing flickers.
+'use strict';
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const USAGE = `usage:
+  web search <query> [-n N]           Google results: title, url, snippet
+  web read <url> [--links] [--max N]  main article text as markdown (Readability)
+  web text <url> [--max N]            all visible text of the page
+  web eval <url> <js-expression>      run JS in the page, print the result
+read suits articles/docs; for shops and listings use text, or eval for exact fields.
+options: --timeout S (default 25), --max N chars (default 20000, 0 = no limit)`;
+
+const CDP = process.env.WEB_CDP || 'http://127.0.0.1:9222';
+const READABILITY = path.join(os.homedir(), '.local/share/web/Readability.js');
+
+function parseArgs(argv) {
+  const o = { pos: [], n: 10, links: false, max: 20000, timeout: 25 };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '-n') o.n = +argv[++i];
+    else if (a === '--links') o.links = true;
+    else if (a === '--max') o.max = +argv[++i];
+    else if (a === '--timeout') o.timeout = +argv[++i];
+    else if (a === '-h' || a === '--help') o.help = true;
+    else o.pos.push(a);
+  }
+  return o;
+}
+
+async function connect() {
+  let v;
+  try {
+    v = await (await fetch(`${CDP}/json/version`)).json();
+  } catch {
+    throw new Error(`Chrome not reachable on ${CDP}; start it via /usr/bin/google-chrome-stable (adds the debug port)`);
+  }
+  const ws = new WebSocket(v.webSocketDebuggerUrl);
+  await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error('CDP websocket failed')); });
+  let id = 0;
+  const pending = new Map();
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.id && pending.has(m.id)) {
+      const { res, rej } = pending.get(m.id);
+      pending.delete(m.id);
+      m.error ? rej(new Error(`${m.error.message}`)) : res(m.result);
+    }
+  };
+  const send = (method, params = {}, sessionId) => new Promise((res, rej) => {
+    const i = ++id;
+    pending.set(i, { res, rej });
+    ws.send(JSON.stringify({ id: i, method, params, sessionId }));
+  });
+  return { ws, send };
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function withPage(url, timeoutS, fn) {
+  const { ws, send } = await connect();
+  const { targetId } = await send('Target.createTarget', { url: 'about:blank', hidden: true });
+  const cleanup = async () => { try { await send('Target.closeTarget', { targetId }); } catch {} ws.close(); };
+  process.once('SIGINT', async () => { await cleanup(); process.exit(130); });
+  try {
+    const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
+    const page = {
+      eval: async (expression) => {
+        const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, sessionId);
+        if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
+        return r.result.value;
+      },
+    };
+    // Lets injected scripts (Readability) run on pages with strict CSP / Trusted Types.
+    await send('Page.setBypassCSP', { enabled: true }, sessionId);
+    await send('Page.navigate', { url }, sessionId);
+    const deadline = Date.now() + timeoutS * 1000;
+    while (Date.now() < deadline) {
+      if (await page.eval('document.readyState').catch(() => '') === 'complete') break;
+      await sleep(200);
+    }
+    // Wait for client-side rendering to settle: text length unchanged across two polls (max 4 s).
+    let last = -1, same = 0;
+    for (const end = Math.min(deadline, Date.now() + 4000); Date.now() < end && same < 2; ) {
+      const len = await page.eval('document.body ? document.body.innerText.length : 0').catch(() => -1);
+      same = len === last && len > 0 ? same + 1 : 0;
+      last = len;
+      await sleep(300);
+    }
+    return await fn(page);
+  } finally {
+    await cleanup();
+  }
+}
+
+function clip(s, max) {
+  return max > 0 && s.length > max ? `${s.slice(0, max)}\n\n[… truncated at ${max} of ${s.length} chars; use --max 0 for all]` : s;
+}
+
+// In-page: Google results → [{title, url, snippet}]. Climbs from each result heading to the largest
+// ancestor holding only that result, so it does not depend on Google's class names.
+const SEARCH_JS = `(() => {
+  if (location.pathname.startsWith('/sorry')) return { captcha: location.href };
+  const root = document.querySelector('#search') || document.body;
+  const seen = new Set(), out = [];
+  for (const h of root.querySelectorAll('a h3')) {
+    const a = h.closest('a');
+    const url = a.href;
+    if (!url || seen.has(url) || /^https?:\\/\\/(www\\.)?google\\.[^/]+\\/search/.test(url)) continue;
+    seen.add(url);
+    let c = a;
+    while (c.parentElement && c.parentElement !== root && c.parentElement.querySelectorAll('a h3').length === 1) c = c.parentElement;
+    const title = h.innerText.trim();
+    const snippet = c.innerText.split('\\n').map((s) => s.trim())
+      .filter((l) => l && l !== title && !l.includes('›') && l.length > 25).join(' ')
+      .replace(/\\s*Read more\\b/g, '').replace(/\\s*Missing:.*$/, '').slice(0, 300);
+    out.push({ title, url, snippet });
+  }
+  return { results: out };
+})()`;
+
+// In-page: DOM element → markdown-ish text.
+const MD_JS = `function toMd(root, links) {
+  const blocks = new Set(['P','DIV','SECTION','ARTICLE','HEADER','FOOTER','MAIN','ASIDE','FIGURE','FIGCAPTION','TABLE','TBODY','THEAD','UL','OL','DL','DD','DT','FORM','DETAILS','SUMMARY','BLOCKQUOTE']);
+  const walk = (n, ol) => {
+    if (n.nodeType === 3) return n.textContent.replace(/\\s+/g, ' ');
+    if (n.nodeType !== 1) return '';
+    const t = n.tagName;
+    if (['SCRIPT','STYLE','NOSCRIPT','SVG','IMG','PICTURE','VIDEO','IFRAME','BUTTON','INPUT','SELECT','TEXTAREA'].includes(t)) return '';
+    const kids = (o) => [...n.childNodes].map((c) => walk(c, o)).join('');
+    if (/^H[1-6]$/.test(t)) return '\\n\\n' + '#'.repeat(+t[1]) + ' ' + kids().trim() + '\\n\\n';
+    if (t === 'BR') return '\\n';
+    if (t === 'HR') return '\\n\\n---\\n\\n';
+    if (t === 'PRE') return '\\n\\n\\x60\\x60\\x60\\n' + n.textContent.replace(/\\n+$/, '') + '\\n\\x60\\x60\\x60\\n\\n';
+    if (t === 'CODE') return '\\x60' + n.textContent + '\\x60';
+    if (t === 'LI') return '\\n' + (ol ? ol.i++ + '. ' : '- ') + kids().trim();
+    if (t === 'OL') return '\\n' + kids({ i: 1 }) + '\\n';
+    if (t === 'TR') return '\\n| ' + [...n.children].map((c) => walk(c).trim().replace(/\\n+/g, ' ')).join(' | ') + ' |';
+    if (t === 'A') {
+      const s = kids().trim();
+      return links && n.href && s && !n.href.startsWith('javascript:') ? '[' + s + '](' + n.href + ')' : kids();
+    }
+    if (t === 'BLOCKQUOTE') return '\\n\\n' + kids().trim().split('\\n').map((l) => '> ' + l).join('\\n') + '\\n\\n';
+    return blocks.has(t) ? '\\n\\n' + kids() + '\\n\\n' : kids();
+  };
+  return walk(root).split('\\n').map((l) => l.trim()).join('\\n').replace(/\\n{3,}/g, '\\n\\n').trim();
+}`;
+
+function readJs(links) {
+  const src = fs.readFileSync(READABILITY, 'utf8');
+  return `(() => {
+    ${MD_JS}
+    const Readability = (() => { ${src}\n; return Readability; })();
+    let art = null;
+    try { art = new Readability(document.cloneNode(true), { serializer: (el) => el }).parse(); } catch (e) {}
+    const body = art && art.content ? art.content : (document.querySelector('main, [role=main], article') || document.body);
+    return { title: (art && art.title) || document.title, byline: art && art.byline, url: location.href,
+             readability: !!(art && art.content), text: toMd(body, ${links}) };
+  })()`;
+}
+
+async function main() {
+  const o = parseArgs(process.argv.slice(2));
+  const [cmd, ...rest] = o.pos;
+  if (o.help || !cmd) { console.log(USAGE); return; }
+
+  if (cmd === 'search') {
+    const q = rest.join(' ');
+    if (!q) throw new Error('search needs a query');
+    const r = await withPage(`https://www.google.com/search?hl=en&q=${encodeURIComponent(q)}`, o.timeout, (p) => p.eval(SEARCH_JS));
+    if (r.captcha) throw new Error(`Google showed a captcha; solve it in Chrome, then retry (${r.captcha})`);
+    if (!r.results.length) throw new Error('no results parsed; Google layout may have changed (try: web text <search url>)');
+    console.log(r.results.slice(0, o.n).map((x, i) => `${i + 1}. ${x.title}\n   ${x.url}${x.snippet ? `\n   ${x.snippet}` : ''}`).join('\n'));
+  } else if (cmd === 'read') {
+    if (!rest[0]) throw new Error('read needs a url');
+    const r = await withPage(rest[0], o.timeout, (p) => p.eval(readJs(o.links)));
+    const head = [`# ${r.title}`, r.byline, r.url, r.readability ? null : '(no article found; showing main/body text)'].filter(Boolean).join('\n');
+    console.log(clip(`${head}\n\n${r.text}`, o.max));
+  } else if (cmd === 'text') {
+    if (!rest[0]) throw new Error('text needs a url');
+    console.log(clip(await withPage(rest[0], o.timeout, (p) => p.eval('document.body.innerText')), o.max));
+  } else if (cmd === 'eval') {
+    if (rest.length < 2) throw new Error('eval needs a url and an expression');
+    const v = await withPage(rest[0], o.timeout, (p) => p.eval(rest.slice(1).join(' ')));
+    console.log(typeof v === 'string' ? v : JSON.stringify(v));
+  } else {
+    throw new Error(`unknown command: ${cmd}\n${USAGE}`);
+  }
+}
+
+main().then(() => process.exit(0), (e) => { console.error(`web: ${e.message}`); process.exit(1); });
