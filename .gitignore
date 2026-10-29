@@ -11,3 +11,9 @@ home/claude/.claude/skills/.trash/
 
 # Python bytecode
 __pycache__/
+
+# signing keys live in ~/.secrets, never here
+.secrets/
+*.jks
+*.keystore
+signing.env
